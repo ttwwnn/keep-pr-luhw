@@ -13,6 +13,17 @@ protocol SessionRendering: AnyObject {
     /// asked has just left the keyboard in the sidebar. The request is real
     /// even when the answer to it is "you are already there".
     func focusActiveTerminal()
+    /// Ask before ending something, on this window; `then` runs only on yes.
+    /// A no puts the keyboard back where it was.
+    func confirm(_ question: Confirmation, then: @escaping () -> Void)
+}
+
+/// A question worth a yes before work ends: closing a tab, a pane or a
+/// workspace ends the programs in it, and there is no undo for that.
+struct Confirmation {
+    let title: String
+    let detail: String
+    let action: String
 }
 
 /// Layer 5's root, and the single writer of all selection state.
@@ -351,47 +362,20 @@ final class Session {
 
         case .closeTab(let id):
             guard let id = id ?? views[window]?.tab else { return }
-            do {
-                // Close the panes first: they are daemon tabs of their own.
-                let panes = workspaces.first { $0.name == id.workspace }?
-                    .tabs.first { $0.id == id }?.panes ?? []
-                for pane in panes {
-                    try? Daemon.closeTab(pane.tab, in: id.workspace)
-                }
-                try Daemon.closeTab(id.root, in: id.workspace)
-                SurfacePool.shared.discard(workspace: id.workspace, tab: id.root)
-                for pane in panes {
-                    SurfacePool.shared.discard(workspace: id.workspace, tab: pane.tab)
-                }
-                refreshFromDaemon()
-                publish()
-            } catch {
-                renderer(window)?.present(error: error.localizedDescription)
-            }
+            renderer(window)?.confirm(Confirmation(
+                title: "Close the tab “\(tabName(id))”?",
+                detail: "Whatever is running in it will be ended.",
+                action: "Close Tab"
+            )) { [weak self] in self?.close(tab: id, from: window) }
 
         case .closePane(let pane):
-            // Closing the *focused* pane, which for a tab with no splits is
-            // the tab itself. A root closed while panes remain is not a hole:
-            // the daemon promotes an orphaned pane to stand on its own, so
-            // what survives is the rest of the arrangement.
-            guard let workspace = workspace(for: window), let tab = shownTab(in: window) else { return }
-            let requested = pane ?? tab.focusedPane
-            let target = tab.owns(pane: requested) ? requested : tab.id.root
-            // Closing is idempotent on purpose. Pressing ⌘W faster than the
-            // daemon is re-listed asks twice for the same pane, and the second
-            // ask is not a failure worth an alert — it is the person being
-            // quicker than the round trip.
-            // A root closed with panes left behind: the first of them stands
-            // in — the daemon's rule — and carries the tab's name on.
-            if target == tab.id.root,
-               let heir = tab.panes.first(where: { $0.splitOf == tab.id.root }) {
-                nameStore.moveTab(from: tab.id, to: TabID(workspace: tab.id.workspace, root: heir.tab))
-            }
-            try? Daemon.closeTab(target, in: workspace.name)
-            SurfacePool.shared.discard(workspace: workspace.name, tab: target)
-            refreshFromDaemon()
-            publish()
-            renderer(window)?.focusActiveTerminal()
+            guard let tab = shownTab(in: window) else { return }
+            let alone = tab.panes.isEmpty
+            renderer(window)?.confirm(Confirmation(
+                title: alone ? "Close the tab “\(tabName(tab.id))”?" : "Close this pane?",
+                detail: "Whatever is running in it will be ended.",
+                action: alone ? "Close Tab" : "Close Pane"
+            )) { [weak self] in self?.close(pane: pane, from: window) }
 
         case .removeWorkspace(let name):
             guard var view = views[window], view.workspaces.contains(name) else { return }
@@ -410,20 +394,11 @@ final class Session {
             publish()
 
         case .killWorkspace(let name):
-            do {
-                try Daemon.kill(name)
-            } catch {
-                renderer(window)?.present(error: error.localizedDescription)
-            }
-            SurfacePool.shared.discardAll(workspace: name)
-            refreshFromDaemon()
-            if workspace(for: window) == nil || workspace(for: window)?.tabs.isEmpty == true {
-                views[window]?.workspace = workspaces.first(where: { !$0.tabs.isEmpty })?.name
-                if let workspace = workspace(for: window) {
-                    activate(workspace.lastTabID ?? workspace.tabs.first?.id, in: window)
-                }
-            }
-            publish()
+            renderer(window)?.confirm(Confirmation(
+                title: "Close the workspace “\(nameStore.workspace(name) ?? name)”?",
+                detail: "Every tab in it will be ended, in every window.",
+                action: "Close Workspace"
+            )) { [weak self] in self?.kill(workspace: name, from: window) }
 
         case .split(let direction):
             guard let workspace = workspace(for: window), let tab = shownTab(in: window) else { return }
@@ -786,13 +761,92 @@ final class Session {
             guard let item = views[window]?.picker?.items.first(where: { $0.id == id }),
                   case .running(let tab) = item.kind
             else { return }
-            try? Daemon.closeTab(tab.root, in: tab.workspace)
-            SurfacePool.shared.discard(workspace: tab.workspace, tab: tab.root)
-            refreshFromDaemon()
-            let items = pickerItems(for: window)
-            views[window]?.picker?.items = items
-            publish()
+            renderer(window)?.confirm(Confirmation(
+                title: "Close the tab “\(tabName(tab))”?",
+                detail: "Whatever is running in it will be ended.",
+                action: "Close Tab"
+            )) { [weak self] in self?.dismiss(tab: tab, from: window) }
         }
+    }
+
+    // MARK: - ending things, once confirmed
+
+    /// A tab's name as its row shows it, for a question about it.
+    private func tabName(_ id: TabID) -> String {
+        let tab = workspaces.first { $0.name == id.workspace }?.tabs.first { $0.id == id }
+        let title = nameStore.tab(id) ?? tab?.title ?? ""
+        return Self.plainTitle(title, fallback: "tab \(id.root)")
+    }
+
+    private func close(tab id: TabID, from window: WindowID) {
+        do {
+            // Close the panes first: they are daemon tabs of their own.
+            let panes = workspaces.first { $0.name == id.workspace }?
+                .tabs.first { $0.id == id }?.panes ?? []
+            for pane in panes {
+                try? Daemon.closeTab(pane.tab, in: id.workspace)
+            }
+            try Daemon.closeTab(id.root, in: id.workspace)
+            SurfacePool.shared.discard(workspace: id.workspace, tab: id.root)
+            for pane in panes {
+                SurfacePool.shared.discard(workspace: id.workspace, tab: pane.tab)
+            }
+            refreshFromDaemon()
+            publish()
+        } catch {
+            renderer(window)?.present(error: error.localizedDescription)
+        }
+    }
+
+    private func close(pane: UInt32?, from window: WindowID) {
+        // Closing the *focused* pane, which for a tab with no splits is
+        // the tab itself. A root closed while panes remain is not a hole:
+        // the daemon promotes an orphaned pane to stand on its own, so
+        // what survives is the rest of the arrangement.
+        guard let workspace = workspace(for: window), let tab = shownTab(in: window) else { return }
+        let requested = pane ?? tab.focusedPane
+        let target = tab.owns(pane: requested) ? requested : tab.id.root
+        // Closing is idempotent on purpose. Pressing ⌘W faster than the
+        // daemon is re-listed asks twice for the same pane, and the second
+        // ask is not a failure worth an alert — it is the person being
+        // quicker than the round trip.
+        // A root closed with panes left behind: the first of them stands
+        // in — the daemon's rule — and carries the tab's name on.
+        if target == tab.id.root,
+           let heir = tab.panes.first(where: { $0.splitOf == tab.id.root }) {
+            nameStore.moveTab(from: tab.id, to: TabID(workspace: tab.id.workspace, root: heir.tab))
+        }
+        try? Daemon.closeTab(target, in: workspace.name)
+        SurfacePool.shared.discard(workspace: workspace.name, tab: target)
+        refreshFromDaemon()
+        publish()
+        renderer(window)?.focusActiveTerminal()
+    }
+
+    private func kill(workspace name: String, from window: WindowID) {
+        do {
+            try Daemon.kill(name)
+        } catch {
+            renderer(window)?.present(error: error.localizedDescription)
+        }
+        SurfacePool.shared.discardAll(workspace: name)
+        refreshFromDaemon()
+        if workspace(for: window) == nil || workspace(for: window)?.tabs.isEmpty == true {
+            views[window]?.workspace = workspaces.first(where: { !$0.tabs.isEmpty })?.name
+            if let workspace = workspace(for: window) {
+                activate(workspace.lastTabID ?? workspace.tabs.first?.id, in: window)
+            }
+        }
+        publish()
+    }
+
+    private func dismiss(tab: TabID, from window: WindowID) {
+        try? Daemon.closeTab(tab.root, in: tab.workspace)
+        SurfacePool.shared.discard(workspace: tab.workspace, tab: tab.root)
+        refreshFromDaemon()
+        let items = pickerItems(for: window)
+        views[window]?.picker?.items = items
+        publish()
     }
 
     // MARK: - internals

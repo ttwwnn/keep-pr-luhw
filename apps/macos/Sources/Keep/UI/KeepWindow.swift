@@ -464,3 +464,37 @@ private final class CenteringHost: NSView {
         Trace.log("chrome", "toggle at \(Int(convert(place.origin, to: nil).x))")
     }
 }
+
+// MARK: - asking before ending things
+
+extension MainWindowController {
+    /// A sheet on this window: its own question, not every window's, and not
+    /// a modal loop that would stop the poller while it waits.
+    ///
+    /// The ending is the first button, so return answers it, and escape
+    /// cancels. A no hands the keyboard back to the terminal the click took
+    /// it from. A second question while one is up is dropped: the first is
+    /// still waiting for its answer, and two sheets cannot stack.
+    func confirm(_ question: Confirmation, then: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = question.title
+        alert.informativeText = question.detail
+        alert.alertStyle = .warning
+        let end = alert.addButton(withTitle: question.action)
+        end.hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        let answer: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            if response == .alertFirstButtonReturn {
+                then()
+            } else {
+                self?.focusActiveTerminal()
+            }
+        }
+        guard let window else {
+            answer(alert.runModal())
+            return
+        }
+        guard window.attachedSheet == nil else { return }
+        alert.beginSheetModal(for: window, completionHandler: answer)
+    }
+}
