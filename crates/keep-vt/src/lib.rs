@@ -30,8 +30,20 @@ pub mod ffi {
     pub const SUCCESS: c_int = 0;
 
     /// `GhosttyTerminalData` values we read.
+    pub const DATA_KITTY_KEYBOARD_FLAGS: c_int = 8;
     pub const DATA_TITLE: c_int = 12;
     pub const DATA_PWD: c_int = 13;
+    pub const DATA_MODE: c_int = 37;
+
+    /// `GhosttyTerminalModeConfig`: a mode to ask about, and its answer.
+    /// `mode` is a `GhosttyMode` — the number, with bit 15 set for ANSI
+    /// modes and clear for DEC private ones.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct ModeConfig {
+        pub mode: u16,
+        pub value: bool,
+    }
 
     /// A borrowed string owned by the terminal. Only valid until the next
     /// mutating call, so copy before releasing the lock.
@@ -196,6 +208,33 @@ impl Terminal {
         self.borrowed_string(ffi::DATA_PWD)
     }
 
+    /// The Kitty keyboard protocol flags the program inside has asked for,
+    /// on the screen it is using. Zero when it never asked.
+    pub fn kitty_keyboard_flags(&self) -> u8 {
+        let mut flags: u8 = 0;
+        let rc = unsafe {
+            ffi::ghostty_terminal_get(
+                self.raw,
+                ffi::DATA_KITTY_KEYBOARD_FLAGS,
+                &mut flags as *mut u8 as *mut c_void,
+            )
+        };
+        if rc == ffi::SUCCESS { flags } else { 0 }
+    }
+
+    /// Whether a DEC private mode (`CSI ? n h`) is set.
+    pub fn dec_mode(&self, number: u16) -> bool {
+        let mut config = ffi::ModeConfig { mode: number & 0x7FFF, value: false };
+        let rc = unsafe {
+            ffi::ghostty_terminal_get(
+                self.raw,
+                ffi::DATA_MODE,
+                &mut config as *mut ffi::ModeConfig as *mut c_void,
+            )
+        };
+        rc == ffi::SUCCESS && config.value
+    }
+
     fn borrowed_string(&self, data: c_int) -> String {
         let mut out = ffi::GhosttyString { ptr: std::ptr::null(), len: 0 };
         let rc = unsafe {
@@ -222,13 +261,63 @@ impl Terminal {
     }
 
     /// Render the current screen state into the requested format.
+    ///
+    /// The VT form is what an attaching client is painted with, so it carries
+    /// what the program switched on as well as what it drew — and says so in
+    /// an order a terminal replaying it will not get wrong:
+    ///
+    /// - The alternate screen first, when the program is on it. Switching
+    ///   saves the cursor with the modes of the moment, and a switch replayed
+    ///   after the program's modes saved those instead — origin mode among
+    ///   them, which then came back on when the program left.
+    /// - The Kitty keyboard flags last, and always, zero included. A repaint
+    ///   that said nothing when the program asked for nothing left a terminal
+    ///   that had missed the program's pop with the flags still on, and a
+    ///   shell reading keys it never asked for.
     pub fn snapshot(&self, format: Format) -> Result<Vec<u8>, Error> {
+        let body = self.formatted(format)?;
+        if format != Format::Vt {
+            return Ok(body);
+        }
+        let mut out = Vec::with_capacity(body.len() + 160);
+        // The screen, said either way, and cleared once it is the one being
+        // painted: a terminal that missed the program leaving its alternate
+        // screen is taken back to the main one, not painted over where it is.
+        match [1049u16, 1047, 47].into_iter().find(|&m| self.dec_mode(m)) {
+            Some(1049) => out.extend_from_slice(b"\x1b[?1049h"),
+            Some(mode) => out.extend_from_slice(format!("\x1b[?{mode}h\x1b[H\x1b[2J").as_bytes()),
+            None => out.extend_from_slice(b"\x1b[?1049l\x1b[H\x1b[2J"),
+        }
+        // The modes that change what the keyboard and mouse send, switched off
+        // where the program has them off — the body below only ever switches
+        // on, so a terminal that missed the program switching one off would
+        // otherwise keep it. modifyOtherKeys likewise: off here, back on in
+        // the body if the program has it.
+        for mode in Self::INPUT_MODES {
+            if !self.dec_mode(mode) {
+                out.extend_from_slice(format!("\x1b[?{mode}l").as_bytes());
+            }
+        }
+        out.extend_from_slice(b"\x1b[>4m");
+        out.extend_from_slice(&body);
+        out.extend_from_slice(format!("\x1b[={};1u", self.kitty_keyboard_flags()).as_bytes());
+        Ok(out)
+    }
+
+    /// DEC modes that decide what a key press or a mouse movement writes:
+    /// application cursor keys, mouse reporting in all its encodings, focus
+    /// reports, bracketed paste.
+    const INPUT_MODES: [u16; 11] = [1, 9, 1000, 1002, 1003, 1005, 1006, 1015, 1016, 1004, 2004];
+
+    fn formatted(&self, format: Format) -> Result<Vec<u8>, Error> {
         let extra_screen = ffi::ScreenExtra {
             size: std::mem::size_of::<ffi::ScreenExtra>(),
             cursor: true,
             style: true,
             hyperlink: true,
             protection: false,
+            // Written by `snapshot` itself, so that it is said even when it
+            // is zero.
             kitty_keyboard: false,
             charsets: false,
         };
@@ -240,14 +329,18 @@ impl Terminal {
             extra: ffi::TerminalExtra {
                 size: std::mem::size_of::<ffi::TerminalExtra>(),
                 palette: false,
-                modes: false,
+                // Bracketed paste, mouse reporting, the alternate screen,
+                // application cursor keys: whatever the program switched on is
+                // switched on again for whoever attaches.
+                modes: true,
                 scrolling_region: false,
                 tabstops: false,
                 // The directory the shell announced. A client that attaches
                 // learns it from the snapshot rather than waiting for the next
                 // prompt, which is what decides where a new tab opens.
                 pwd: true,
-                keyboard: false,
+                // modifyOtherKeys, for the same reason as the Kitty flags.
+                keyboard: true,
                 screen: extra_screen,
             },
             selection: std::ptr::null(),
@@ -275,6 +368,12 @@ impl Terminal {
             return Err(Error(rc));
         }
 
+        // Nothing to say comes back as no allocation at all, and a slice may
+        // not be made from a null pointer even when it is empty.
+        if ptr.is_null() || len == 0 {
+            unsafe { ffi::ghostty_formatter_free(formatter) };
+            return Ok(Vec::new());
+        }
         let out = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
         unsafe {
             ffi::ghostty_free(std::ptr::null(), ptr, len);
@@ -320,6 +419,103 @@ mod tests {
         let vt = t.snapshot(Format::Vt).expect("vt");
         assert!(vt.windows(2).any(|w| w == b"\x1b["), "no escapes in VT snapshot");
         assert!(vt.len() > text.len(), "VT snapshot should be richer than plain");
+    }
+
+    /// Replay a snapshot into a terminal that has never seen anything else,
+    /// which is what a client attaching to a tab is.
+    fn replayed(t: &Terminal, cols: u16, rows: u16) -> Terminal {
+        let mut fresh = Terminal::new(cols, rows).unwrap();
+        fresh.write(&t.snapshot(Format::Vt).unwrap());
+        fresh
+    }
+
+    #[test]
+    fn snapshot_carries_the_keyboard_the_program_asked_for() {
+        // What Claude Code writes on start: the Kitty keyboard protocol at
+        // flags 5, modifyOtherKeys at level 2, and bracketed paste.
+        let mut t = Terminal::new(40, 5).unwrap();
+        t.write(b"\x1b[>5u\x1b[>4;2m\x1b[?2004hprompt> ");
+        assert_eq!(t.kitty_keyboard_flags(), 5);
+
+        let fresh = replayed(&t, 40, 5);
+        assert_eq!(fresh.kitty_keyboard_flags(), 5, "kitty flags lost in the repaint");
+        assert!(fresh.dec_mode(2004), "bracketed paste lost in the repaint");
+        assert!(fresh.text().unwrap().contains("prompt>"), "screen lost in the repaint");
+    }
+
+    #[test]
+    fn snapshot_of_a_plain_shell_asks_for_nothing() {
+        let mut t = Terminal::new(40, 5).unwrap();
+        t.write(b"$ ls\r\nfile\r\n$ ");
+        let fresh = replayed(&t, 40, 5);
+        assert_eq!(fresh.kitty_keyboard_flags(), 0);
+        assert!(!fresh.dec_mode(2004));
+        assert!(!fresh.dec_mode(1049));
+    }
+
+    /// A terminal that missed the program's pop — output dropped for a slow
+    /// client — is told the flags are off, not left to assume.
+    #[test]
+    fn snapshot_says_the_flags_are_off_when_they_are() {
+        let mut t = Terminal::new(40, 5).unwrap();
+        t.write(b"\x1b[>5u\x1b[<u$ ");
+        let vt = t.snapshot(Format::Vt).unwrap();
+        assert!(vt.ends_with(b"\x1b[=0;1u"), "flags not declared: {:?}", String::from_utf8_lossy(&vt));
+
+        let mut stale = Terminal::new(40, 5).unwrap();
+        stale.write(b"\x1b[>5u");
+        stale.write(&vt);
+        assert_eq!(stale.kitty_keyboard_flags(), 0, "stale flags survived the repaint");
+    }
+
+    /// A terminal that missed the program switching bracketed paste and
+    /// mouse reporting off, or leaving its alternate screen, is set right.
+    #[test]
+    fn snapshot_turns_off_what_the_program_turned_off() {
+        let mut t = Terminal::new(40, 5).unwrap();
+        t.write(b"$ ");
+        let mut stale = Terminal::new(40, 5).unwrap();
+        stale.write(b"\x1b[?1049h\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?1h");
+        stale.write(&t.snapshot(Format::Vt).unwrap());
+        for mode in [1049, 2004, 1000, 1006, 1] {
+            assert!(!stale.dec_mode(mode), "mode {mode} survived the repaint");
+        }
+        assert!(stale.text().unwrap().contains('$'));
+    }
+
+    /// Origin mode on the alternate screen: the replayed switch must save
+    /// the cursor before the program's modes are replayed, as the program's
+    /// own switch did, or leaving the screen restores them.
+    #[test]
+    fn leaving_a_replayed_alternate_screen_restores_what_the_program_left() {
+        let mut t = Terminal::new(40, 8).unwrap();
+        t.write(b"$ prog\r\n\x1b[?1049h\x1b[2;5r\x1b[?6hx");
+        let mut outer = replayed(&t, 40, 8);
+        let leave = b"\x1b[r\x1b[?6l\x1b[?1049l";
+        t.write(leave);
+        outer.write(leave);
+        assert_eq!(t.dec_mode(6), outer.dec_mode(6), "origin mode came back different");
+        assert!(!outer.dec_mode(6));
+    }
+
+    #[test]
+    fn snapshot_of_the_alternate_screen_lands_on_the_alternate_screen() {
+        // An editor: main screen left behind, alternate screen drawn, and the
+        // keyboard pushed while on it. The repaint has to set the mode before
+        // it paints, or switching screens afterwards would wipe the paint.
+        let mut t = Terminal::new(40, 5).unwrap();
+        t.write(b"$ vim notes\r\n");
+        t.write(b"\x1b[?1049h\x1b[H\x1b[2Jediting notes\x1b[>1u");
+        assert!(t.dec_mode(1049));
+
+        let fresh = replayed(&t, 40, 5);
+        assert!(fresh.dec_mode(1049), "alternate screen lost in the repaint");
+        assert!(
+            fresh.text().unwrap().contains("editing notes"),
+            "alternate screen came back blank: {:?}",
+            fresh.text().unwrap()
+        );
+        assert_eq!(fresh.kitty_keyboard_flags(), 1, "the editor's keyboard lost");
     }
 
     #[test]
