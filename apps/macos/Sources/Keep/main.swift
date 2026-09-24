@@ -18,6 +18,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// thing written down before the app died was "no windows were open",
     /// and it came back with one, every time.
     private var quitting = false
+    private var keyMonitor: Any?
+
+    /// ⌘W and ⌘Z do nothing here, with any other modifier held as well.
+    ///
+    /// A terminal holding work that must not end is the wrong place for a
+    /// chord that closes things on a slip of the hand, and ⌘Z has no undo to
+    /// offer a shell — only a keystroke for the program to misread. Taken out
+    /// before anything sees them — the menus, the sidebar's fields, and the
+    /// terminal, where libghostty would otherwise act on them or type them.
+    /// Closing stays in the menus and on the tabs' buttons.
+    private func swallowUnwantedKeys() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.contains(.command),
+                  let key = event.charactersIgnoringModifiers?.lowercased(),
+                  key == "w" || key == "z"
+            else { return event }
+            return nil
+        }
+    }
 
     /// The window a menu item means.
     ///
@@ -193,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = GhosttyApp.shared
         buildMenu()
+        swallowUnwantedKeys()
 
         // Every window this run will have, made here, in one turn of the run
         // loop. A tiling window manager reacts to each window that appears;
@@ -344,21 +364,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         splitDownItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(splitDownItem)
         fileMenu.addItem(.separator())
-        // ⌘W closes what you are looking at — the pane. Only a tab with no
-        // splits makes the two the same thing.
+        // No keys: closing is a click, never a chord. See `swallowUnwantedKeys`.
         fileMenu.addItem(
-            withTitle: "Close Pane", action: #selector(closePane(_:)), keyEquivalent: "w")
-        let closeTabItem = NSMenuItem(
-            title: "Close Tab", action: #selector(closeTab(_:)), keyEquivalent: "w")
-        closeTabItem.keyEquivalentModifierMask = [.command, .shift]
-        fileMenu.addItem(closeTabItem)
+            withTitle: "Close Pane", action: #selector(closePane(_:)), keyEquivalent: "")
+        fileMenu.addItem(
+            withTitle: "Close Tab", action: #selector(closeTab(_:)), keyEquivalent: "")
         // AppKit's own, so the routing to the key window is the system's and
         // not ours to get wrong.
-        let closeWindowItem = NSMenuItem(
-            title: "Close Window",
-            action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        closeWindowItem.keyEquivalentModifierMask = [.command, .option]
-        fileMenu.addItem(closeWindowItem)
+        fileMenu.addItem(
+            withTitle: "Close Window",
+            action: #selector(NSWindow.performClose(_:)), keyEquivalent: "")
         fileItem.submenu = fileMenu
         main.addItem(fileItem)
 
