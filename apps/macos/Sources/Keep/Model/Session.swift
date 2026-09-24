@@ -28,6 +28,10 @@ final class Session {
     private var workspaces: [WorkspaceEntity] = []
     private let sidebarStore = SidebarStateStore()
     private let tabOrderStore = TabOrderStore()
+    private let nameStore = NameStore()
+    /// Claude Code's permission mode in each tab that runs it, as last read
+    /// off its screen. Absent: manual, not Claude Code, or not read yet.
+    private var claudeModes: [TabID: ClaudeMode] = [:]
 
     /// What each window is pointed at, and who to hand its snapshot to.
     ///
@@ -134,6 +138,7 @@ final class Session {
             renderer.present(error: error.localizedDescription)
             return
         }
+        nameStore.validate(daemonStart: Daemon.startedAt)
         refreshFromDaemon()
 
         // Something must be on screen; a fresh daemon gets a default
@@ -376,6 +381,12 @@ final class Session {
             // daemon is re-listed asks twice for the same pane, and the second
             // ask is not a failure worth an alert — it is the person being
             // quicker than the round trip.
+            // A root closed with panes left behind: the first of them stands
+            // in — the daemon's rule — and carries the tab's name on.
+            if target == tab.id.root,
+               let heir = tab.panes.first(where: { $0.splitOf == tab.id.root }) {
+                nameStore.moveTab(from: tab.id, to: TabID(workspace: tab.id.workspace, root: heir.tab))
+            }
             try? Daemon.closeTab(target, in: workspace.name)
             SurfacePool.shared.discard(workspace: workspace.name, tab: target)
             refreshFromDaemon()
@@ -472,6 +483,19 @@ final class Session {
             refreshOpenLists()
             publish()
 
+        case .renameTab(let id, let name):
+            nameStore.setTab(id, to: Self.chosenName(name))
+            refreshOpenLists()
+            publish()
+            // Wherever the name was typed, the keyboard goes back to the work.
+            renderer(window)?.focusActiveTerminal()
+
+        case .renameWorkspace(let workspace, let name):
+            nameStore.setWorkspace(workspace, to: Self.chosenName(name))
+            refreshOpenLists()
+            publish()
+            renderer(window)?.focusActiveTerminal()
+
         case .setSidebar(let state):
             sidebarStore.save(state, for: window)
             publish()
@@ -487,6 +511,9 @@ final class Session {
             // The old filing goes with the tab: surfaces keyed by the old
             // name would otherwise hold clients on ids the daemon reissued.
             SurfacePool.shared.discard(workspace: id.workspace, tab: id.root)
+            // And so does the name somebody gave it.
+            nameStore.moveTab(from: id, to: TabID(workspace: to, root: newRoot))
+            claudeModes[TabID(workspace: to, root: newRoot)] = claudeModes.removeValue(forKey: id)
             refreshFromDaemon()
             // Land where it was dropped, not where the daemon appended it.
             if let target = workspaces.first(where: { $0.name == to }) {
@@ -558,7 +585,8 @@ final class Session {
             if global {
                 label = "everywhere"
             } else if let tab = shownTab(in: window) {
-                label = "\(tab.id.workspace) › \(tab.title.isEmpty ? "tab \(tab.id.root)" : tab.title)"
+                let title = displayTitle(of: tab)
+                label = "\(tab.id.workspace) › \(title.isEmpty ? "tab \(tab.id.root)" : title)"
             } else {
                 label = "this pane"
             }
@@ -912,7 +940,7 @@ final class Session {
                 kind: .running(entry.tab.id),
                 workspace: name,
                 context: context(for: entry.tab, in: entry.workspace, alone: alone),
-                title: Self.plainTitle(entry.tab.title, fallback: "tab \(entry.tab.id.root)"),
+                title: Self.plainTitle(displayTitle(of: entry.tab), fallback: "tab \(entry.tab.id.root)"),
                 detail: entry.tab.panes.isEmpty ? "" : "\(entry.tab.panes.count + 1) panes",
                 command: Self.program(of: entry.tab),
                 path: entry.tab.cwd,
@@ -1054,6 +1082,45 @@ final class Session {
         }
     }
 
+    /// What a tab is called: the name somebody gave it, or else whatever its
+    /// program last called it. The program's own title is left alone
+    /// underneath — where a workspace is and what is running are read from
+    /// it — so clearing the name hands the tab straight back to it.
+    private func displayTitle(of tab: TabEntity) -> String {
+        nameStore.tab(tab.id) ?? tab.title
+    }
+
+    /// A typed name as it is kept: trimmed, and nothing at all when nothing
+    /// is left, which is how a name is taken back.
+    private static func chosenName(_ name: String?) -> String? {
+        guard let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else { return nil }
+        return trimmed
+    }
+
+    // MARK: - Claude Code's mode
+
+    /// The tabs worth reading Claude Code's mode off — the ones that look like
+    /// they are running it. Everything else would only ever answer "none".
+    func claudeTabs() -> [TabID] {
+        workspaces.flatMap(\.tabs).filter { Self.program(of: $0) == "claude" }.map(\.id)
+    }
+
+    /// What the screens said. `.some(nil)` is a footer naming no mode —
+    /// manual — and clears the colour; a tab missing from `modes` could not
+    /// be read this time, and keeps what it had.
+    func noteClaudeModes(_ modes: [TabID: ClaudeMode?]) {
+        var next = claudeModes
+        for (id, mode) in modes { next[id] = mode }
+        // Tabs that are gone, or have stopped running Claude Code, lose it.
+        let running = Set(claudeTabs())
+        next = next.filter { running.contains($0.key) }
+        guard next != claudeModes else { return }
+        claudeModes = next
+        publish()
+    }
+
     /// A tab's title with the busy marks its program put there taken off.
     ///
     /// Programs that title themselves also spin: Claude Code writes `✳` and
@@ -1086,8 +1153,21 @@ final class Session {
     /// naming. A guess, and only ever used in place of silence: the moment
     /// the daemon answers, its answer wins.
     private static func program(of tab: TabEntity) -> String {
-        if !tab.command.isEmpty { return tab.command }
-        return tab.title.first.map(spinnerMarks.contains) == true ? "claude" : ""
+        let wearsClaudeMarks = tab.title.first.map(spinnerMarks.contains) == true
+        if !tab.command.isEmpty {
+            // Claude Code's own installer keeps each release as a file named
+            // after its version, and the process is called what the file is:
+            // `2.1.281`, which names nothing. Behind a title wearing its
+            // marks, a bare version number is Claude Code.
+            if wearsClaudeMarks, isVersionNumber(tab.command) { return "claude" }
+            return tab.command
+        }
+        return wearsClaudeMarks ? "claude" : ""
+    }
+
+    private static func isVersionNumber(_ name: String) -> Bool {
+        let parts = name.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count >= 2 && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy(\.isNumber) }
     }
 
     /// The left column of a terminal row: which workspace, and where in it.
@@ -1226,6 +1306,7 @@ final class Session {
             guard let workspace = workspaces.first(where: { $0.name == name }) else { return nil }
             return SessionSnapshot.SidebarRow(
                 name: workspace.name,
+                title: nameStore.workspace(workspace.name) ?? workspace.name,
                 subtitle: workspace.subtitle,
                 tabs: workspace.tabs.count,
                 running: workspace.tabs.flatMap(\.busyTitles),
@@ -1235,13 +1316,14 @@ final class Session {
                 tabRows: workspace.tabs.map { tab in
                     SessionSnapshot.SidebarTab(
                         id: tab.id,
-                        title: Self.plainTitle(tab.title, fallback: "tab \(tab.id.root)"),
+                        title: Self.plainTitle(displayTitle(of: tab), fallback: "tab \(tab.id.root)"),
                         command: Self.program(of: tab),
                         busy: tab.busy,
                         isActive: tab.id == view.tab,
                         isElsewhere: views.contains {
                             $0.key != window && $0.value.tab == tab.id
-                        }
+                        },
+                        claudeMode: claudeModes[tab.id]
                     )
                 },
                 expanded: !sidebar.folded.contains(workspace.name)
@@ -1250,17 +1332,18 @@ final class Session {
         let strip = (workspace(for: window)?.tabs ?? []).map { tab in
             SessionSnapshot.StripItem(
                 id: tab.id,
-                title: tab.title,
+                title: displayTitle(of: tab),
                 busy: tab.busy,
                 hasPanes: !tab.panes.isEmpty,
                 isActive: tab.id == view.tab,
-                isElsewhere: views.contains { $0.key != window && $0.value.tab == tab.id }
+                isElsewhere: views.contains { $0.key != window && $0.value.tab == tab.id },
+                claudeMode: claudeModes[tab.id]
             )
         }
         let active = shownTab(in: window).map { tab in
             SessionSnapshot.ActiveTab(
                 id: tab.id,
-                title: tab.title,
+                title: displayTitle(of: tab),
                 panes: tab.panes,
                 focusedPane: focusedPane(of: tab, in: window)
             )

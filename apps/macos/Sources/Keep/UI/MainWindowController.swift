@@ -202,7 +202,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         tabStrip.onSelect = { [weak self] id in self?.send(.activateTab(id)) }
         tabStrip.onClose = { [weak self] id in self?.send(.closeTab(id)) }
-        tabStrip.onNewTab = { [weak self] in self?.send(.newTab(in: nil)) }
+        tabStrip.onRename = { [weak self] id, name in self?.renamed(id, to: name) }
         tabStrip.onGoTo = { [weak self] in self?.send(.togglePicker) }
         tabStrip.onCommands = { [weak self] in self?.send(.togglePalette(.root)) }
         tabStrip.onReorder = { [weak self] ids in self?.send(.reorderTabs(ids, in: nil)) }
@@ -306,6 +306,41 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
               window?.firstResponder !== surface
         else { return }
         window?.makeFirstResponder(surface)
+    }
+
+    /// A name typed over a tab in the row, or nothing typed and the keyboard
+    /// to hand back.
+    ///
+    /// The session puts the keyboard on the terminal after a rename, which is
+    /// where Return means it to go. It is wrong wherever the name was left
+    /// for another field: the picker, opened with ⌘P halfway through typing
+    /// it, or a field in the sidebar that a click went into. Either one has
+    /// the keyboard by the time the name arrives here, and a keyboard sent
+    /// past it types into a shell nobody is looking at — the Return meant to
+    /// finish the other field included, which runs whatever was typed. So
+    /// the field that had it takes it back, with its caret where it was.
+    private func renamed(_ id: TabID, to name: String?) {
+        guard let name else {
+            focusActiveTerminal()
+            return
+        }
+        // Asked before the session moves it. The field editor is shared,
+        // so the field is its delegate, and the caret is the editor's.
+        let editor = (window?.firstResponder as? NSTextView).flatMap {
+            $0.isFieldEditor ? $0 : nil
+        }
+        let field = editor?.delegate as? NSView
+        let selection = editor?.selectedRanges
+        send(.renameTab(id, to: name))
+        if picker.superview != nil, !picker.isHidden {
+            picker.takeFocus()
+        } else if let field, field.window === window, !field.isDescendant(of: tabStrip),
+                  window?.firstResponder !== editor,
+                  window?.makeFirstResponder(field) == true,
+                  let selection,
+                  let restored = window?.firstResponder as? NSTextView, restored.isFieldEditor {
+            restored.selectedRanges = selection
+        }
     }
 
     /// The picker covers the whole window while it is up, and takes the

@@ -168,7 +168,8 @@ as one call on reveal.
 
 ## Data flows
 
-**Open a new tab** (⌘T or strip "+"): strip → `dispatch(.newTab(in: nil))` →
+**Open a new tab** (⌘T, or the "+" on a workspace in the sidebar): →
+`dispatch(.newTab(in:))` →
 Session resolves the active workspace, calls the daemon, re-lists, creates the
 `TabEntity` → activates it → `render`: the container mounts a host on
 first presentation — this is hydration, the one moment a surface and its

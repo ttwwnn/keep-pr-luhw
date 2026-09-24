@@ -134,6 +134,92 @@ final class TabOrderStore {
     }
 }
 
+/// The names people gave tabs and workspaces, over the ones they came with.
+///
+/// App-side, for the same reason the tab order is: the daemon addresses a tab
+/// by number and a workspace by the name every shell and the CLI find it by,
+/// and neither is a label anybody chose. What is kept here is only how they
+/// are shown.
+///
+/// Tab names are keyed by id, and ids belong to the daemon that issued them —
+/// a daemon started afresh counts from one again, and a name left on "tab 1"
+/// would land on some unrelated shell. So the daemon's start is kept beside
+/// them, and a different start forgets them. Workspace names are keyed by
+/// the workspace's own name, which outlives a daemon, and stay.
+@MainActor
+final class NameStore {
+    private struct Contents: Codable {
+        /// When the daemon these tab ids belong to started, in seconds.
+        var daemonStart: Double?
+        /// "workspace␟root" → name.
+        var tabs: [String: String] = [:]
+        var workspaces: [String: String] = [:]
+
+        init() {}
+
+        // Tolerant: a field missing from an older or damaged file is an empty
+        // one, not a reason to lose the rest.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            daemonStart = try c.decodeIfPresent(Double.self, forKey: .daemonStart)
+            tabs = try c.decodeIfPresent([String: String].self, forKey: .tabs) ?? [:]
+            workspaces = try c.decodeIfPresent([String: String].self, forKey: .workspaces) ?? [:]
+        }
+    }
+
+    private var contents: Contents
+    private let file: URL
+
+    init(directory: URL? = nil) {
+        let dir = directory ?? stateDirectory()
+        file = dir.appendingPathComponent("names.json")
+        contents = (try? JSONDecoder().decode(Contents.self, from: Data(contentsOf: file)))
+            ?? Contents()
+    }
+
+    private static func key(_ id: TabID) -> String { "\(id.workspace)\u{1F}\(id.root)" }
+
+    func tab(_ id: TabID) -> String? { contents.tabs[Self.key(id)] }
+    func workspace(_ name: String) -> String? { contents.workspaces[name] }
+
+    /// Forget the tab names if they were given under another daemon.
+    func validate(daemonStart: Date?) {
+        guard let start = daemonStart?.timeIntervalSince1970 else { return }
+        guard contents.daemonStart != start else { return }
+        if contents.daemonStart != nil { contents.tabs = [:] }
+        contents.daemonStart = start
+        write()
+    }
+
+    /// nil or empty gives the tab its program's title back.
+    func setTab(_ id: TabID, to name: String?) {
+        let key = Self.key(id)
+        guard contents.tabs[key] != name else { return }
+        contents.tabs[key] = name
+        write()
+    }
+
+    func setWorkspace(_ workspace: String, to name: String?) {
+        guard contents.workspaces[workspace] != name else { return }
+        contents.workspaces[workspace] = name
+        write()
+    }
+
+    /// A tab's id changed under it — moved to another workspace, or its root
+    /// pane closed and another stood in — and its name goes with it.
+    func moveTab(from old: TabID, to new: TabID) {
+        guard old != new, let name = contents.tabs.removeValue(forKey: Self.key(old)) else { return }
+        contents.tabs[Self.key(new)] = name
+        write()
+    }
+
+    private func write() {
+        try? FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? JSONEncoder().encode(contents).write(to: file, options: .atomic)
+    }
+}
+
 /// One window, as it was when the app last looked.
 ///
 /// The frame is four numbers rather than an `NSRect` because this is the

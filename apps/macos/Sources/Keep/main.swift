@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let session = Session()
     private var controllers: [MainWindowController] = []
     private var poller: DaemonPoller?
+    private var claudeModes: ClaudeModeWatcher?
     private let windowStore = WindowStateStore()
     /// Set the moment quitting becomes certain. On the way out AppKit closes
     /// every window, and each of those is indistinguishable — from here —
@@ -225,6 +226,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let poller = DaemonPoller(session: session)
         poller.start()
         self.poller = poller
+        let claudeModes = ClaudeModeWatcher(session: session)
+        claudeModes.start()
+        self.claudeModes = claudeModes
 
         // ⌃` from anywhere: the drop-down terminal. Registered after launch,
         // once — a Carbon hotkey outlives whoever registered it, and two

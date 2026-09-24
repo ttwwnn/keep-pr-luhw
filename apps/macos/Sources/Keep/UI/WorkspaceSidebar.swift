@@ -20,12 +20,17 @@ import SwiftUI
 /// And colour carries information or it does not appear. The dot carries
 /// state; the current row carries a wash in a hue derived from its own name,
 /// so that selection is unmistakable without being the same blue every app
-/// uses for it. Nothing else in here is coloured.
+/// uses for it; a tab running Claude Code in one of its permission modes is
+/// titled in the colour Claude Code prints that mode in. Nothing else in here
+/// is coloured.
 struct WorkspaceSidebar: View {
     @ObservedObject var model: SidebarRows
     let dispatch: (Intent) -> Void
     @State private var newName = ""
     @State private var hovered: String?
+    /// A header's +, which brightens under the pointer. Apart from `hovered`,
+    /// which the header itself sets while the pointer is anywhere on it.
+    @State private var hoveredNewTab: String?
     /// The tab a drag is currently held over, keyed like `hovered`.
     @State private var dropTarget: String?
     /// The payload in flight. Set in `onDrag` and read from here everywhere:
@@ -38,10 +43,43 @@ struct WorkspaceSidebar: View {
     @State private var liveTabOrder: LiveTabOrder?
     @State private var liveWorkspaceOrder: [String]?
     @FocusState private var fieldFocused: Bool
+    /// The name being typed, if one is, and what the field opened on. The
+    /// text lives here and never in the row: while Claude Code works, the
+    /// title under the field changes several times a second, and a field
+    /// bound to it would lose every keystroke to the next one.
+    @State private var renaming: Renaming?
+    @State private var renameText = ""
+    @State private var renameSeed = ""
+    /// Which name field holds the keyboard. Kept apart from the new-workspace
+    /// field's, because losing it is how a click elsewhere ends a rename.
+    @FocusState private var renameFocus: Renaming?
+    /// The name under the pointer, as opposed to merely its row. A click on
+    /// the chosen row renames only when it lands on the name, so a click
+    /// beside it still hands the keyboard back to the terminal, as it always
+    /// has.
+    @State private var pointerOnName: Renaming?
+    /// A rename waiting out the double-click interval, and the watch on the
+    /// keyboard kept for as long as it waits.
+    @State private var pendingRename: DispatchWorkItem?
+    @State private var keyWatch: Any?
+    /// What the last click in here landed on: a tab, a header, or nil for
+    /// one of the small buttons on them. A double-click renames only what
+    /// both of its clicks landed on. One whose first click closed a tab and
+    /// whose second landed on the row that slid up into its place is two
+    /// clicks on two things, whatever the click count says.
+    @State private var lastClicked: Renaming?
 
     struct LiveTabOrder: Equatable {
         var workspace: String
         var roots: [UInt32]
+    }
+
+    /// What a name can be typed for. One at a time: a second rename begun
+    /// while one is open ends the first, keeping what it says, as a click
+    /// elsewhere would have.
+    private enum Renaming: Hashable {
+        case tab(TabID)
+        case workspace(String)
     }
 
     private var rows: [SessionSnapshot.SidebarRow] { model.rows }
@@ -74,6 +112,10 @@ struct WorkspaceSidebar: View {
         liveTabOrder = nil
         liveWorkspaceOrder = nil
         dropTarget = nil
+        // A press that turned into a drag was never a click on a name. The
+        // button's action does not fire for a drag anyway; this covers a
+        // click that was followed by one before its rename came due.
+        disarmRename()
     }
 
     /// The terminal's own face, for the strings the terminal would also print.
@@ -133,6 +175,35 @@ struct WorkspaceSidebar: View {
                 cancelDrag()
             }
         }
+        .onChange(of: model.rows) { _, new in
+            // A name being typed outlives every snapshot that arrives in the
+            // meantime, but not the thing it names. Gone — closed, moved
+            // under a new id, taken out of this window — the edit is dropped
+            // with it; folded out of sight, it is kept, as a click elsewhere
+            // would have kept it.
+            guard let target = renaming else { return }
+            if title(of: target, in: new) == nil {
+                endRename(saving: false, handingBack: true)
+            } else if !isShown(target, in: new) {
+                endRename(saving: true, handingBack: true)
+            }
+        }
+        .onChange(of: renameFocus) { old, new in
+            guard let editing = renaming else { return }
+            if new == editing, old != editing {
+                selectWholeName()
+            } else if old == editing, new != editing {
+                // Finder's rule: clicking away keeps what was typed. The
+                // keyboard is already wherever the click put it, and stays
+                // there. Session hands it to the terminal whenever a name is
+                // kept, and a field the click moved to, the picker's or a new
+                // workspace's, would be left open with nothing reaching it
+                // and what was typed next going to the shell.
+                let taker = fieldHoldingKeyboard()
+                endRename(saving: true, handingBack: false)
+                if let taker { giveKeyboardBack(to: taker) }
+            }
+        }
     }
 
     /// One list row per workspace: the workspace button, and under it the
@@ -140,10 +211,20 @@ struct WorkspaceSidebar: View {
     /// rows and the reorder must keep counting workspaces.
     private func rowButton(_ row: SessionSnapshot.SidebarRow) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            workspaceButton(row)
+            if renaming == .workspace(row.name) {
+                workspaceEditor(row)
+            } else {
+                workspaceButton(row)
+            }
             if row.expanded {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(shownTabs(of: row)) { tab in tabButton(tab, in: row) }
+                    ForEach(shownTabs(of: row)) { tab in
+                        if renaming == .tab(tab.id) {
+                            tabEditor(tab, in: row)
+                        } else {
+                            tabButton(tab, in: row)
+                        }
+                    }
                 }
                 // Under the header, on their way in and out — which with the
                 // clip below reads as sliding from beneath it rather than
@@ -156,17 +237,17 @@ struct WorkspaceSidebar: View {
         .padding(.horizontal, 5)
     }
 
-    /// The workspace, as a plain header: the name, and the fold at the far
-    /// end. Everything the old card said — the dot, what is running, the
+    /// The workspace, as a plain header: the name, and a + and the fold at the
+    /// far end. Everything the old card said — the dot, what is running, the
     /// count, the path — now belongs to the rows beneath it or to the
     /// tooltip; a header that repeats its children is twice the reading for
     /// the same news.
     private func workspaceButton(_ row: SessionSnapshot.SidebarRow) -> some View {
         Button {
-            dispatch(.activateWorkspace(row.name))
+            clickHeader(row)
         } label: {
             HStack(spacing: 8) {
-                Text(row.name)
+                Text(row.title)
                     .font(identifier)
                     .foregroundStyle(
                         row.isActive
@@ -174,6 +255,7 @@ struct WorkspaceSidebar: View {
                             : hovered == row.name ? Palette.inkResting : Palette.inkFaint)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .onHover { inside in notePointer(inside, onNameOf: .workspace(row.name)) }
                 if row.dot == .busy {
                     // The one fact worth carrying up from the tabs: something
                     // is running in here, visible with the group folded shut.
@@ -182,6 +264,8 @@ struct WorkspaceSidebar: View {
                         .foregroundStyle(Palette.busy)
                 }
                 Spacer(minLength: 8)
+                // The +'s room, kept here so the fold stays at the far end.
+                Color.clear.frame(width: 10, height: 1)
                 disclosure(row)
             }
             .padding(.horizontal, 12)
@@ -190,6 +274,18 @@ struct WorkspaceSidebar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Over the header and not inside its label, for the reason the tab's
+        // × is: a button inside a button hands its clicks to whichever of the
+        // two SwiftUI prefers, and a + that also entered the workspace would
+        // be two things at once. Padded as the label is, so the two sit on
+        // one line; in from the edge by the label's inset, the fold's width
+        // and the gap between them.
+        .overlay(alignment: .trailing) {
+            newTabButton(row)
+                .padding(.top, 10)
+                .padding(.bottom, 4)
+                .padding(.trailing, 12 + 10 + 8)
+        }
         .help(tooltip(for: row))
         // Dragging a header rearranges the workspaces. This replaces the
         // List's own `.onMove`, which claimed every drag that started
@@ -219,6 +315,7 @@ struct WorkspaceSidebar: View {
         }
         .contextMenu {
             Button("New Tab") { dispatch(.newTab(in: row.name)) }
+            Button("Rename Workspace…") { beginRename(.workspace(row.name)) }
             Divider()
             // Also in the menu, not only under the pointer. A list you can
             // only rearrange by dragging is a list most people never learn
@@ -249,6 +346,7 @@ struct WorkspaceSidebar: View {
     private func disclosure(_ row: SessionSnapshot.SidebarRow) -> some View {
         if row.tabRows.count > 0 {
             Button {
+                lastClicked = nil
                 dispatch(.toggleDisclosure(row.name))
             } label: {
                 Image(systemName: "chevron.right")
@@ -265,6 +363,56 @@ struct WorkspaceSidebar: View {
         }
     }
 
+    /// A new tab in this workspace, beside the fold. One on every header
+    /// rather than one at the end of the strip: a new tab always lands in
+    /// some workspace, and a + on the header says which without the workspace
+    /// having to be entered first. There on a header with nothing to fold as
+    /// well, beside the fold's empty room, so every + in the column sits at
+    /// the same x.
+    private func newTabButton(_ row: SessionSnapshot.SidebarRow) -> some View {
+        Button {
+            lastClicked = nil
+            dispatch(.newTab(in: row.name))
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(hoveredNewTab == row.name ? Palette.inkResting : Palette.inkFaint)
+                .frame(width: 10)
+                .contentShape(Rectangle().inset(by: -6))
+        }
+        .buttonStyle(.plain)
+        .help("New Tab in \(row.title)")
+        .onHover { inside in
+            hoveredNewTab = inside ? row.name : (hoveredNewTab == row.name ? nil : hoveredNewTab)
+        }
+    }
+
+    /// The header while its name is being typed. The same geometry as the
+    /// button it stands in for, so the name does not move when the field
+    /// takes over — but not a button, and not draggable: a field inside a
+    /// button's label loses its clicks to the button, and a header that drags
+    /// would turn selecting text with the pointer into moving the workspace.
+    ///
+    /// The field's prompt is the workspace's own name, which is what an empty
+    /// field gives back.
+    private func workspaceEditor(_ row: SessionSnapshot.SidebarRow) -> some View {
+        HStack(spacing: 8) {
+            nameField(for: .workspace(row.name), prompt: row.name)
+                .font(identifier)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Palette.wash(0.09))
+                        .padding(.horizontal, -8)
+                        .padding(.vertical, -3))
+            Spacer(minLength: 8)
+            newTabButton(row)
+            disclosure(row)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+    }
+
     /// One tab, under its workspace, wearing the strip's own clothes: the
     /// chosen one is a glass capsule, the others are bare text that brightens
     /// under the pointer, ✳ while busy, ⧉ when another window is showing it.
@@ -275,7 +423,7 @@ struct WorkspaceSidebar: View {
         let chosen = tab.isActive && row.isActive
         let hoveredHere = hovered == tabHoverKey(tab) || dropTarget == tabHoverKey(tab)
         return Button {
-            dispatch(.activateTab(tab.id))
+            clickTab(tab, chosen: chosen)
         } label: {
             HStack(spacing: 6) {
                 // The title arrives with the marks its program wrote already
@@ -289,8 +437,7 @@ struct WorkspaceSidebar: View {
                 }
                 Text(tab.title)
                     .font(.system(size: 12, weight: chosen ? .medium : .regular))
-                    .foregroundStyle(
-                        chosen ? Palette.ink : hoveredHere ? Palette.inkResting : Palette.inkFaint)
+                    .foregroundStyle(titleInk(for: tab, chosen: chosen, hovered: hoveredHere))
                     .lineLimit(1)
                     .truncationMode(.tail)
                     // The title gives before the program's name does: a title
@@ -298,6 +445,7 @@ struct WorkspaceSidebar: View {
                     // or may be six tabs saying the same sentence, while the
                     // name is the word that tells you what the tab is.
                     .layoutPriority(-1)
+                    .onHover { inside in notePointer(inside, onNameOf: .tab(tab.id)) }
                 if !tab.command.isEmpty {
                     Text("— \(tab.command)")
                         .font(.system(size: 12))
@@ -364,14 +512,93 @@ struct WorkspaceSidebar: View {
             hovered = inside ? key : (hovered == key ? nil : hovered)
         }
         .contextMenu {
+            Button("Rename Tab…") { beginRename(.tab(tab.id)) }
+            Divider()
             Button("Close Tab", role: .destructive) { dispatch(.closeTab(tab.id)) }
         }
+    }
+
+    /// A tab's row while its name is being typed: the button's geometry
+    /// without the button, for the reasons the header's editor gives. The
+    /// program's name and the ⧉ step aside for the field; the ✳ stays, since
+    /// it sits before the name and moving it would move the text.
+    private func tabEditor(_ tab: SessionSnapshot.SidebarTab, in row: SessionSnapshot.SidebarRow)
+        -> some View
+    {
+        let chosen = tab.isActive && row.isActive
+        return HStack(spacing: 6) {
+            if tab.busy {
+                Text("✳")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Palette.busy)
+            }
+            nameField(for: .tab(tab.id), prompt: "The program's title")
+                .font(.system(size: 12, weight: chosen ? .medium : .regular))
+            // The close button's room, as on the row.
+            Color.clear.frame(width: 12, height: 1)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .background {
+            if chosen {
+                GlassRow(cornerRadius: 13, tint: Palette.litRow)
+            } else {
+                // The new-workspace field's wash while it is typed in.
+                Capsule(style: .continuous).fill(Palette.wash(0.09))
+            }
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+    }
+
+    /// Where a name is typed, for a tab or a workspace alike.
+    ///
+    /// Return keeps it and Esc takes it back; either way the keyboard goes
+    /// back to the terminal, since that is where it was before the name was
+    /// clicked.
+    private func nameField(for target: Renaming, prompt: String) -> some View {
+        // Each field ends only its own edit: by the time a field on its way
+        // out reports anything, the edit open may be another one.
+        let end = { (saving: Bool) in
+            guard renaming == target else { return }
+            endRename(saving: saving, handingBack: true)
+        }
+        return TextField(prompt, text: $renameText)
+            .textFieldStyle(.plain)
+            .foregroundStyle(Palette.ink)
+            .focused($renameFocus, equals: target)
+            .onSubmit {
+                // A turn later. A field can also report a submit as it gives
+                // up the keyboard, in the middle of the window handing it to
+                // whatever was clicked, and handing the keyboard back from
+                // inside that hand-over would fight it. A turn later the click
+                // has landed, and a return is none the worse for the wait.
+                DispatchQueue.main.async { end(true) }
+            }
+            // Esc is listened for twice. A field's keys go to AppKit's field
+            // editor first and reach SwiftUI by one road or the other; ending
+            // twice is harmless, since the second finds nothing open.
+            .onExitCommand { end(false) }
+            .onKeyPress(.escape) {
+                end(false)
+                return .handled
+            }
+            .onAppear {
+                // A turn later: the field has to be in the window before it
+                // can be handed the keyboard, and asked for in the same
+                // update that inserts it, the request finds nothing to focus.
+                DispatchQueue.main.async {
+                    guard renaming == target else { return }
+                    renameFocus = target
+                }
+            }
     }
 
     /// The row's ×: there under the pointer, gone otherwise, the way the
     /// strip's own tabs offer it.
     private func closeButton(_ tab: SessionSnapshot.SidebarTab, visible: Bool) -> some View {
         Button {
+            lastClicked = nil
             dispatch(.closeTab(tab.id))
         } label: {
             Image(systemName: "xmark")
@@ -386,6 +613,239 @@ struct WorkspaceSidebar: View {
         .opacity(visible ? 1 : 0)
         .allowsHitTesting(visible)
         .animation(.easeOut(duration: 0.12), value: visible)
+    }
+
+    /// A tab's title in the colour of the mode Claude Code is in there, when
+    /// it is in one it colours — the colour its own footer prints the mode
+    /// in, so the list and the screen say it the same way, and a tab left in
+    /// bypass is plain from across the list. Otherwise the ink the row's
+    /// state gives it. Only the ink: weight and capsule still say which tab
+    /// is the chosen one.
+    private func titleInk(for tab: SessionSnapshot.SidebarTab, chosen: Bool, hovered: Bool)
+        -> Color
+    {
+        if let mode = tab.claudeMode { return Color(nsColor: mode.dynamicColor) }
+        return chosen ? Palette.ink : hovered ? Palette.inkResting : Palette.inkFaint
+    }
+
+    /// A click on a tab. A double-click renames it, and so does a single
+    /// click on the name of the tab already chosen, the way Finder renames
+    /// the file already selected; anything else enters it, as it always did.
+    private func clickTab(_ tab: SessionSnapshot.SidebarTab, chosen: Bool) {
+        let target = Renaming.tab(tab.id)
+        let again = lastClicked == target
+        lastClicked = target
+        disarmRename()
+        if isSecondClick && again {
+            // Not dispatched. Entering a tab hands the keyboard to the
+            // terminal, which would take it straight back off the field this
+            // is about to open — and the first click of the pair has already
+            // done the entering.
+            beginRename(target)
+            return
+        }
+        if chosen && pointerOnName == target { armRename(target) }
+        dispatch(.activateTab(tab.id))
+    }
+
+    /// The same for a header, whose name is the workspace's.
+    private func clickHeader(_ row: SessionSnapshot.SidebarRow) {
+        let target = Renaming.workspace(row.name)
+        let again = lastClicked == target
+        lastClicked = target
+        disarmRename()
+        if isSecondClick && again {
+            beginRename(target)
+            return
+        }
+        if row.isActive && pointerOnName == target { armRename(target) }
+        dispatch(.activateWorkspace(row.name))
+    }
+
+    /// Whether the click being answered is the second of a double-click, read
+    /// off the event: its count is the window server's, measured when the
+    /// clicks happened rather than when a main thread busy with a switch got
+    /// round to them. Only a mouse event is asked — a button can be pressed
+    /// from the keyboard too, and any other event asked for a click count
+    /// raises.
+    private var isSecondClick: Bool {
+        guard let event = NSApp.currentEvent,
+              event.type == .leftMouseUp || event.type == .leftMouseDown
+        else { return false }
+        return event.clickCount >= 2
+    }
+
+    private func notePointer(_ inside: Bool, onNameOf target: Renaming) {
+        if inside {
+            pointerOnName = target
+        } else if pointerOnName == target {
+            pointerOnName = nil
+            // Moving off the name is moving on: a rename still waiting for
+            // its interval to pass would open under a pointer that has left.
+            disarmRename()
+        }
+    }
+
+    /// Finder's slow click: the chosen item's name, clicked once, opens for
+    /// typing once the double-click interval has passed with no second click.
+    /// Waiting is what keeps the first half of a double-click from being
+    /// taken for a single one.
+    private func armRename(_ target: Renaming) {
+        let work = DispatchWorkItem {
+            disarmRename()
+            // Still the chosen one: a switch in the meantime has moved on.
+            guard isChosen(target) else { return }
+            beginRename(target)
+        }
+        pendingRename = work
+        // A key pressed while it waits calls it off, as it does in Finder.
+        // The click has already handed the keyboard to the terminal, the way
+        // a click on the current row always has, and whoever types straight
+        // after it is typing a command. A field opening halfway through would
+        // take the rest of the command, and the return after it.
+        keyWatch = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            disarmRename()
+            return event
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + NSEvent.doubleClickInterval, execute: work)
+    }
+
+    /// Call off a rename that is waiting, and stop watching the keyboard
+    /// for it.
+    private func disarmRename() {
+        pendingRename?.cancel()
+        pendingRename = nil
+        if let keyWatch { NSEvent.removeMonitor(keyWatch) }
+        keyWatch = nil
+    }
+
+    /// Open the field on what the thing is called now — the title as shown,
+    /// its program's busy marks already off it.
+    private func beginRename(_ target: Renaming) {
+        disarmRename()
+        guard renaming != target, let seed = title(of: target, in: rows) else { return }
+        endRename(saving: true, handingBack: false)
+        Trace.log("sidebar", "renaming \(target)")
+        renameSeed = seed
+        renameText = seed
+        pointerOnName = nil
+        renaming = target
+    }
+
+    /// Close the field. `saving` is false for Esc and for a thing that has
+    /// gone; `handingBack` is false after a blur, which has already put the
+    /// keyboard wherever the click went.
+    ///
+    /// A name that comes back the way it went out is not saved. The field
+    /// opens on what the thing is called at the moment, for a tab usually its
+    /// program's title, and saving that would pin the title as it stood and
+    /// stop following the program — all for a return pressed out of habit.
+    private func endRename(saving: Bool, handingBack: Bool) {
+        guard let target = renaming else { return }
+        let typed = renameText
+        let changed = saving
+            && title(of: target, in: rows) != nil
+            && typed.trimmingCharacters(in: .whitespacesAndNewlines)
+                != renameSeed.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The field's focus is not cleared here. Taking the field out clears
+        // it, and quietly. Cleared by hand, it is applied on SwiftUI's next
+        // update by resigning the keyboard outright, and by then the keyboard
+        // is the terminal's, handed over below in this same turn: the
+        // window itself would hold it, and every key would beep.
+        renaming = nil
+        pointerOnName = nil
+        disarmRename()
+        guard changed else {
+            if handingBack { returnKeyboard() }
+            return
+        }
+        // Session hands the keyboard back itself once a name is kept.
+        switch target {
+        case .tab(let id):
+            dispatch(.renameTab(id, to: typed))
+        case .workspace(let name):
+            dispatch(.renameWorkspace(name, to: typed))
+        }
+    }
+
+    /// The keyboard back to the terminal with nothing renamed. Session hands
+    /// it over only as part of an intent, and the intent that changes nothing
+    /// is entering the tab this window already shows — what a click on the
+    /// current row has always done.
+    private func returnKeyboard() {
+        guard let shown = rows.lazy.flatMap(\.tabRows).first(where: \.isActive) else { return }
+        dispatch(.activateTab(shown.id))
+    }
+
+    /// The text field typing currently goes to, if it goes to one, and where
+    /// its caret stands. Read off the field editor, since that is what holds
+    /// the keyboard for whichever field is being typed in.
+    private func fieldHoldingKeyboard() -> (field: NSView, selection: [NSValue])? {
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
+              editor.isFieldEditor,
+              let field = editor.delegate as? NSView
+        else { return nil }
+        return (field, editor.selectedRanges)
+    }
+
+    /// The keyboard back to a field it was taken from, with the caret where
+    /// it stood. Only if it was taken: asked again, a field that still has it
+    /// starts its editing over and selects everything in it, and so does one
+    /// that gets it back, which is why the caret is put back by hand.
+    private func giveKeyboardBack(to taker: (field: NSView, selection: [NSValue])) {
+        guard fieldHoldingKeyboard()?.field !== taker.field,
+              let window = taker.field.window,
+              window.makeFirstResponder(taker.field),
+              let editor = window.firstResponder as? NSTextView,
+              editor.isFieldEditor
+        else { return }
+        editor.selectedRanges = taker.selection
+    }
+
+    /// The whole name selected, so the first keystroke replaces it and an
+    /// arrow keeps it. Asked for rather than left to however the field came
+    /// by the keyboard; and asked only of a field editor, since the same
+    /// message to a terminal would select its screen.
+    private func selectWholeName() {
+        DispatchQueue.main.async {
+            guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
+                  editor.isFieldEditor
+            else { return }
+            editor.selectAll(nil)
+        }
+    }
+
+    /// What the thing is shown as, or nil when it is no longer in the list.
+    private func title(of target: Renaming, in rows: [SessionSnapshot.SidebarRow]) -> String? {
+        switch target {
+        case .tab(let id):
+            return rows.first { $0.name == id.workspace }?.tabRows.first { $0.id == id }?.title
+        case .workspace(let name):
+            return rows.first { $0.name == name }?.title
+        }
+    }
+
+    /// Whether its row is on screen: a tab's is not while its group is
+    /// folded.
+    private func isShown(_ target: Renaming, in rows: [SessionSnapshot.SidebarRow]) -> Bool {
+        switch target {
+        case .tab(let id):
+            return rows.first { $0.name == id.workspace }?.expanded ?? false
+        case .workspace(let name):
+            return rows.contains { $0.name == name }
+        }
+    }
+
+    /// Whether it is the one this window is in: the tab it shows, or the
+    /// workspace that tab belongs to.
+    private func isChosen(_ target: Renaming) -> Bool {
+        switch target {
+        case .tab(let id):
+            guard let row = rows.first(where: { $0.name == id.workspace }) else { return false }
+            return row.isActive && row.tabRows.contains { $0.id == id && $0.isActive }
+        case .workspace(let name):
+            return rows.first { $0.name == name }?.isActive ?? false
+        }
     }
 
     /// Commit a header drag: the mirror is the final order, and the intent
@@ -424,12 +884,17 @@ struct WorkspaceSidebar: View {
 
     /// Everything running here, one per line, or what the workspace is
     /// otherwise. The row shows one; this is where the rest live.
+    ///
+    /// A workspace shown under a name somebody gave it leads with the name it
+    /// still answers to, since `keep` and every shell's KEEP_WORKSPACE know
+    /// it by that one and the header no longer says it.
     private func tooltip(for row: SessionSnapshot.SidebarRow) -> String {
-        guard !row.running.isEmpty else { return row.subtitle }
+        let known = row.title == row.name ? [] : [row.name]
+        guard !row.running.isEmpty else { return (known + [row.subtitle]).joined(separator: "\n") }
         let heading = row.running.count == 1
             ? "1 running"
             : "\(row.running.count) running"
-        return ([heading] + row.running.map { "· \($0)" }).joined(separator: "\n")
+        return (known + [heading] + row.running.map { "· \($0)" }).joined(separator: "\n")
     }
 
     private func index(of row: SessionSnapshot.SidebarRow) -> Int {

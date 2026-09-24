@@ -123,6 +123,14 @@ enum Daemon {
         return (base as NSString).appendingPathComponent("keep-\(who).sock")
     }
 
+    /// When the running daemon started, as the birth of its socket says.
+    ///
+    /// Tab ids are the daemon's and start over when it does; anything the app
+    /// keeps against an id needs to know which daemon it was kept under.
+    static var startedAt: Date? {
+        (try? FileManager.default.attributesOfItem(atPath: socketPath))?[.creationDate] as? Date
+    }
+
     /// Start keepd if nothing is listening yet.
     ///
     /// The daemon is not a child of this app: it has to outlive every client,

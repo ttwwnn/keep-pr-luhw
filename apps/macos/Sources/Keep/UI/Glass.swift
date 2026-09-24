@@ -227,3 +227,34 @@ final class AdaptiveLozengeView: NSView {
         }
     }
 }
+
+// MARK: - Claude Code's mode colours
+
+extension ClaudeMode {
+    /// The colour Claude Code gives this mode under its prompt, taken from
+    /// its own themes: the dark one on a dark ground, the light one on a light
+    /// ground. A tab named in it reads as the same thing the footer says.
+    func color(dark: Bool) -> NSColor {
+        let rgb: (CGFloat, CGFloat, CGFloat)
+        switch (self, dark) {
+        case (.plan, true): rgb = (72, 150, 140)
+        case (.plan, false): rgb = (0, 102, 102)
+        case (.acceptEdits, true): rgb = (175, 135, 255)
+        case (.acceptEdits, false): rgb = (135, 0, 255)
+        case (.bypass, true): rgb = (255, 107, 128)
+        case (.bypass, false): rgb = (171, 43, 63)
+        case (.auto, true): rgb = (255, 193, 7)
+        case (.auto, false): rgb = (150, 108, 30)
+        }
+        return NSColor(srgbRed: rgb.0 / 255, green: rgb.1 / 255, blue: rgb.2 / 255, alpha: 1)
+    }
+
+    /// The same, resolved against whatever appearance it is drawn in — for
+    /// views that follow the window's appearance rather than the terminal's
+    /// background.
+    var dynamicColor: NSColor {
+        NSColor(name: nil) { appearance in
+            color(dark: appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+        }
+    }
+}

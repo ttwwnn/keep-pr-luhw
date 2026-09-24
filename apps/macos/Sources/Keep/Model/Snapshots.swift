@@ -143,6 +143,62 @@ indirect enum PaneTree: Hashable {
     }
 }
 
+/// The permission mode Claude Code is in, as shift-tab cycles it — the ones
+/// it gives a colour of its own. Manual, its default, has none and is nil.
+///
+/// Read off the screen, from the line under the prompt that says so
+/// (`⏸ plan mode on`, `⏵⏵ bypass permissions on`): Claude Code tells no
+/// hook and no terminal sequence when the mode changes, and that line is
+/// there the moment it does.
+enum ClaudeMode: Hashable {
+    case plan
+    case acceptEdits
+    /// Bypass permissions, and don't-ask, which Claude Code colours the same.
+    case bypass
+    case auto
+
+    /// The mode a screen's footer declares, or nil when it declares none.
+    ///
+    /// Only the first line under the last horizontal rule is read — the rule
+    /// closing the prompt box, where Claude Code writes the mode. The same
+    /// words anywhere else on screen are conversation, not a mode.
+    /// `.some(nil)` is manual: a footer is there and names no mode.
+    /// `nil` is "cannot tell" — a dialog in front, or not Claude Code — and
+    /// leaves whatever was known before standing.
+    static func declared(onScreen text: String) -> ClaudeMode?? {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        // A rule is a line that starts as one. The one above the prompt
+        // carries the session's name partway along (`──── fix-upload ─`), so
+        // what follows the run of rule is not asked about.
+        func isRule(_ line: Substring) -> Bool {
+            line.trimmingCharacters(in: .whitespaces)
+                .hasPrefix(String(repeating: "─", count: 12))
+        }
+        // The prompt box, and only the prompt box: a rule, the prompt, a
+        // rule. A dialog in front draws rules of its own and marks its
+        // choices with the same ❯, but opens with its question — the box
+        // opens with the prompt itself.
+        guard let rule = lines.lastIndex(where: isRule),
+              let opening = lines[..<rule].lastIndex(where: isRule),
+              let first = lines[(opening + 1)..<rule].first(where: {
+                  !$0.trimmingCharacters(in: .whitespaces).isEmpty
+              }),
+              first.trimmingCharacters(in: .whitespaces).hasPrefix("❯")
+                  || first.trimmingCharacters(in: .whitespaces).hasPrefix(">")
+        else { return nil }
+        guard let footer = lines[(rule + 1)...].first(where: {
+            !$0.trimmingCharacters(in: .whitespaces).isEmpty
+        }) else { return .some(nil) }
+        let said = footer.trimmingCharacters(in: .whitespaces)
+        if said.hasPrefix("⏸ plan mode on") { return .some(.plan) }
+        if said.hasPrefix("⏵⏵ accept edits on") { return .some(.acceptEdits) }
+        if said.hasPrefix("⏵⏵ bypass permissions on") { return .some(.bypass) }
+        if said.hasPrefix("⏵⏵ don't ask on") { return .some(.bypass) }
+        if said.hasPrefix("⏵⏵ auto mode on") { return .some(.auto) }
+        return .some(nil)
+    }
+}
+
 /// The one downward channel. Every mutation in the app enters as one of
 /// these; nothing in the UI reaches past this into state.
 enum Intent {
@@ -202,6 +258,16 @@ enum Intent {
     /// every two seconds and a program that spins one redraws it several
     /// times a second, so the poll only ever caught a still frame of it.
     case notePaneTitle(TabID, UInt32, String)
+    /// A name somebody chose for a tab, over whatever its program calls it.
+    /// nil, or nothing but spaces, gives the tab back to its program.
+    ///
+    /// A name for looking, kept by the app: the daemon addresses tabs by
+    /// number and has never had a word for what they are called.
+    case renameTab(TabID, to: String?)
+    /// The same for a workspace, as it is shown. Only shown: the name the
+    /// daemon, the CLI and every shell's KEEP_WORKSPACE know it by stays
+    /// what it was, since that name is how all of them find it.
+    case renameWorkspace(String, to: String?)
     case setSidebar(SidebarState)     // from the toggle or a divider drag
     /// Fold or unfold one workspace's tab list in this window's sidebar.
     case toggleDisclosure(String)
@@ -490,7 +556,10 @@ struct PickerModel: Hashable {
 /// here — the UI resolves ids through the surface pool.
 struct SessionSnapshot: Hashable {
     struct SidebarRow: Hashable, Identifiable {
+        /// The daemon's name for it: the id, and what every intent carries.
         let name: String
+        /// What it is shown as — `name`, unless somebody renamed it.
+        let title: String
         let subtitle: String            // "3 tabs · running", kept for the tooltip
         let tabs: Int
         /// What is running here, one entry per busy pane. The title a busy
@@ -526,6 +595,9 @@ struct SessionSnapshot: Hashable {
         let isActive: Bool
         /// Another window is showing it — the strip's ⧉, said vertically.
         let isElsewhere: Bool
+        /// Claude Code's permission mode, when Claude Code is what runs here
+        /// and it is in one worth a colour.
+        let claudeMode: ClaudeMode?
     }
 
     struct StripItem: Hashable, Identifiable {
@@ -539,6 +611,8 @@ struct SessionSnapshot: Hashable {
         /// saying so, a tab pulled out into a window of its own looks like a
         /// tab that never left.
         let isElsewhere: Bool
+        /// As on the sidebar's row.
+        let claudeMode: ClaudeMode?
     }
 
     struct ActiveTab: Hashable {

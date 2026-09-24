@@ -246,7 +246,7 @@ final class KeepWindow: NSWindow, NSToolbarDelegate {
         let side: CGFloat = 26
         button.frame = NSRect(x: 0, y: 0, width: side, height: side)
 
-        // The same ground the new-tab button stands on, so the two controls
+        // The same ground the row's buttons stand on, so the controls
         // in the chrome are made of one thing.
         let accessory = NSTitlebarAccessoryViewController()
         accessory.identifier = Self.toggleSidebarAccessoryIdentifier
@@ -262,12 +262,12 @@ final class KeepWindow: NSWindow, NSToolbarDelegate {
             // which a bezelled button tolerated and a glass capsule does not:
             // it became a tall rounded slab. So the accessory is a host that
             // stretches, holding a fixed circle it keeps centred.
-            // Untinted at rest, like the new-tab button: glass refracts
+            // Untinted at rest, like the row's buttons: glass refracts
             // darker than a dark bar, which is the quiet state this wants.
             glass.addSubview(button)
             // The host answers the pointer as well as centring: at rest this
             // is untinted glass and a dim glyph, and under the pointer it
-            // lights, which is what the new-tab button at the far end of the
+            // lights, which is what the buttons at the far end of the
             // row does. Two controls in one chrome that behave differently
             // read as two kinds of thing, and only one of them as a control.
             let host = CenteringHost(child: glass, control: button, size: side, leading: 4)
@@ -335,7 +335,7 @@ private final class CenteringHost: NSView {
     /// titlebar this wide can belong to a control this small.
     private static let reach: CGFloat = 380
     /// Between the button and the divider it sits against — the same twelve
-    /// points a tab's capsule keeps from the new-tab button at the far end.
+    /// points a tab's capsule keeps from the buttons at the far end.
     private static let dividerGap: CGFloat = 12
 
     /// Where the sidebar ends, in the window's coordinates. Zero until told,
@@ -402,7 +402,7 @@ private final class CenteringHost: NSView {
 
     /// Untinted glass at rest, which refracts darker than the bar and reads
     /// as a well rather than a lamp; tinted only under the pointer. The same
-    /// two states, from the same palette, as the new-tab button.
+    /// two states, from the same palette, as the row's buttons.
     func retint() {
         let palette = TabStripView.Palette.current
         if let adaptive = child as? AdaptiveLozengeView {

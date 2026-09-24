@@ -14,7 +14,11 @@ import AppKit
 final class TabStripView: NSView {
     var onSelect: ((TabID) -> Void)?
     var onClose: ((TabID) -> Void)?
-    var onNewTab: (() -> Void)?
+    /// A name typed over a tab's title, or nil when the typing came to
+    /// nothing — Escape, or the field left as it was opened — and the
+    /// keyboard only has to go back to the terminal. The row keeps no names:
+    /// it says what was typed and is handed the title back like any other.
+    var onRename: ((TabID, String?) -> Void)?
     /// ⌘P and ⌘⇧P, for the pointer: the overlay's two questions.
     var onGoTo: (() -> Void)?
     var onCommands: (() -> Void)?
@@ -39,7 +43,7 @@ final class TabStripView: NSView {
     /// The toggle sits at 92 and is 26 across, so it ends at 118 — measured,
     /// not guessed. Ten points further on, a tab's capsule (inset two from its
     /// cell) starts twelve points clear of it, which is exactly the gap the
-    /// new-tab button keeps from the last tab at the other end. The capsule is
+    /// row's buttons keep from the last tab at the other end. The capsule is
     /// what the eye measures from, not the close button inside it, so it is
     /// the capsule the two ends are matched on.
     private static let chromeWidth: CGFloat = 128
@@ -72,7 +76,11 @@ final class TabStripView: NSView {
         var hovered = false
     }
 
-    /// Go To, Commands, New Tab — left to right, one family of circles.
+    /// Go To and Commands — left to right, one family of circles.
+    ///
+    /// New Tab is not among them. A tab is opened in a workspace, and the row
+    /// shows one workspace's tabs without naming it; the sidebar names every
+    /// workspace, so each one carries its own "+" there instead.
     private var chromeButtons: [ChromeButton] = []
     private let chromeIsGlass = Glass.isAvailable
     private var backgroundObserver: NSObjectProtocol?
@@ -84,7 +92,6 @@ final class TabStripView: NSView {
         let specs: [(symbol: String, label: String, tip: String, action: Selector)] = [
             ("magnifyingglass", "Go To", "Go To… (⌘P)", #selector(goToPressed)),
             ("command", "Commands", "Commands… (⌘⇧P)", #selector(commandsPressed)),
-            ("plus", "New Tab", "New Tab (⌘T)", #selector(newTabPressed)),
         ]
         for spec in specs {
             let control = ChromeButton()
@@ -119,6 +126,8 @@ final class TabStripView: NSView {
         if let backgroundObserver {
             NotificationCenter.default.removeObserver(backgroundObserver)
         }
+        if let renameWatch { NSEvent.removeMonitor(renameWatch) }
+        if let fieldWatch { NSEvent.removeMonitor(fieldWatch) }
     }
 
     /// Which tab is at a point in this view, if any. Asked while a pane is
@@ -160,6 +169,14 @@ final class TabStripView: NSView {
         // cell at all, which reads as "not on a tab" and hands the window
         // back to the window server with the button still down.
         guard carried == nil else { return }
+        // A name being typed is text: a press in it places the caret and a
+        // drag selects. Neither may carry the window off, which over a lone
+        // tab — the window's title, and so a handle — it otherwise would.
+        if let open = cells.first(where: \.isRenaming), let field = open.editorFrame,
+           open.convert(field, to: self).contains(point) {
+            setWindowDraggable(false)
+            return
+        }
         // A lone tab is not a tab, it is the window's title — drawn without a
         // capsule for exactly that reason — and there is nowhere to reorder it
         // to. Holding the window still under it would take the title bar away
@@ -182,16 +199,34 @@ final class TabStripView: NSView {
         items = newItems
 
         // Reuse cells in place; a poll that only changes a title touches text.
-        while cells.count > items.count {
-            cells.removeLast().removeFromSuperview()
-        }
         while cells.count < items.count {
             let cell = TabCellView()
             cell.onSelect = { [weak self] id in self?.onSelect?(id) }
             cell.onPress = { [weak self] cell, event in self?.carry(cell, from: event) }
             cell.onClose = { [weak self] id in self?.onClose?(id) }
+            cell.onRename = { [weak self] id, name in self?.renamed(id, to: name) }
+            cell.onRenameAsked = { [weak self] id in self?.rename(id) }
             addSubview(cell)
             cells.append(cell)
+        }
+        // A name being typed belongs to a tab, and a cell belongs to a place
+        // in the row. When the tab changes place — one before it closing, the
+        // row reordered from another window — the cell goes with it, since
+        // any cell can show any tab. Settling the field instead cut the name
+        // off halfway through a word, and the rest of the word went on into
+        // the shell. Only a tab that has left the row settles its field, and
+        // what was typed goes with it. Moved once the row has every cell it
+        // needs and before any spare ones are let go, so the place it moves
+        // to exists and the cell being typed in is never one of the spares.
+        if let at = cells.firstIndex(where: \.isRenaming), let id = cells[at].renaming {
+            if let place = items.firstIndex(where: { $0.id == id }) {
+                if place != at { cells.insert(cells.remove(at: at), at: place) }
+            } else {
+                cells[at].finishRenaming(keep: false)
+            }
+        }
+        while cells.count > items.count {
+            cells.removeLast().removeFromSuperview()
         }
         applyCells()
         needsLayout = true
@@ -236,12 +271,13 @@ final class TabStripView: NSView {
     override func layout() {
         super.layout()
         let height = bounds.height
-        // A circle with a plus in it, not a bare glyph: it reads as a
+        // A circle with a symbol in it, not a bare glyph: it reads as a
         // control, which is what it is. The same across as a tab's capsule is
         // tall, and as the sidebar toggle.
         let side: CGFloat = 26
         let gap: CGFloat = 6
-        // Laid from the far end inward, so New Tab keeps the place it had.
+        // Laid from the far end inward: the corner is the fixed point, and
+        // the row of tabs ends wherever the buttons have got to.
         var buttonsStart = bounds.width - 10
         for control in chromeButtons.reversed() {
             buttonsStart -= side
@@ -282,7 +318,7 @@ final class TabStripView: NSView {
         // share what there is rather than insisting on a width. A floor here
         // was a promise the row could not keep: past the point where the
         // floor times the count exceeded the space, the last tabs ran under
-        // the new-tab button and off the end of the strip. Tabs give ground
+        // the buttons and off the end of the strip. Tabs give ground
         // instead, and a cell narrow enough drops what it cannot show.
         let width = available / CGFloat(cells.count)
         // The row's arithmetic, said once each time it changes. Where the
@@ -344,12 +380,41 @@ final class TabStripView: NSView {
     /// and the rest of the row opens a place for it.
     func carry(_ cell: TabCellView, from event: NSEvent) {
         guard let item = cell.tabID else { return }
+        // Read before the press has done anything, because selecting a tab
+        // makes it the active one on the spot. A press on the name of the tab
+        // you were already in is the one that asks for a new name.
+        let wasActive = cell.isActive
+        let clicks = event.clickCount
+        let onName = !cell.isRenaming
+            && cell.titleContains(cell.convert(event.locationInWindow, from: nil))
+        // A press anywhere in the row settles a name being typed, the way a
+        // click anywhere else does, and calls off one still being waited
+        // for. Left open, the field would stay where it is while its tab was
+        // carried away from under it.
+        callOffRename()
+        for open in cells { open.finishRenaming(keep: true) }
         // Nothing to rearrange, or nowhere to run a drag: the press is a
         // click and must still select. A tab that stops selecting because the
         // code that moves tabs bailed out early is worse than one that cannot
         // be moved.
         guard let window, cells.count > 1 else {
             onSelect?(item)
+            guard wasActive, onName else { return }
+            // A lone tab is the window's title, and the window is dragged by
+            // it: the window server moves the window and the pointer keeps
+            // its place within it, so a press here cannot be told from the
+            // start of a drag while the press lasts. Afterwards it can, and
+            // a single click waits out a pause before naming anything in any
+            // case: a window that has moved by the end of it, or a button
+            // still down, was a drag. A double-click is no drag, and names
+            // it at once.
+            if clicks >= 2 {
+                rename(item)
+            } else {
+                rename(
+                    item, after: NSEvent.doubleClickInterval,
+                    unlessMovedFrom: self.window?.frame.origin)
+            }
             return
         }
         // Hovering the tab said this already. Said again because a press that
@@ -444,6 +509,17 @@ final class TabStripView: NSView {
                     let order = self.cells.compactMap(\.tabID?.root)
                     Trace.log("strip", "dropped, order now \(order)")
                     self.onReorder?(order)
+                } else if wasActive && onName {
+                    // Finder's gesture, on the one tab that selecting would
+                    // not change. Selected all the same, as every click on a
+                    // tab is: that is what brings the keyboard back to the
+                    // terminal from wherever it had gone, and a click that
+                    // stopped doing so on the tab most clicked would be missed
+                    // on the first keystroke. The field asks for the keyboard
+                    // a turn later at the soonest, so it still gets it.
+                    Trace.log("strip", "released on the name of \(item.root)")
+                    self.onSelect?(item)
+                    self.rename(item, after: clicks >= 2 ? 0 : NSEvent.doubleClickInterval)
                 } else {
                     Trace.log("strip", "released after \(sawDrag) drag events; treated as a click")
                     self.onSelect?(item)
@@ -494,6 +570,162 @@ final class TabStripView: NSView {
             layout()
         }
         animating = false
+    }
+
+    // MARK: - naming a tab
+
+    /// Bumped to call off a name that was asked for and has not opened yet.
+    /// The wait is a turn of the run loop already queued, which cannot be
+    /// taken back — only told, when it arrives, that it is no longer wanted.
+    private var renameTicket = 0
+    /// Listening, while a name waits out its pause, for anything else being
+    /// done in the meantime.
+    private var renameWatch: Any?
+    /// Listening, while a name is being typed, for a press anywhere else in
+    /// the window.
+    private var fieldWatch: Any?
+
+    /// Call off a name that was asked for and has not opened yet.
+    private func callOffRename() {
+        renameTicket += 1
+        if let renameWatch { NSEvent.removeMonitor(renameWatch) }
+        renameWatch = nil
+    }
+
+    /// Open a tab's title for typing.
+    ///
+    /// After a pause when the press was a single click, which is how Finder
+    /// does it and why: the click may be the first half of a double-click,
+    /// and a field open in time for the second half would take it as a word
+    /// to select. A double-click opens it at once.
+    ///
+    /// Never in the same turn, even then. One name is typed at a time, so a
+    /// field already open is settled first, and its answer is a turn away,
+    /// handing the keyboard to the terminal when it lands. Queued behind
+    /// it, this field takes the keyboard after rather than having it taken.
+    ///
+    /// `origin` is where the window was when the press came, for a press
+    /// that may have been the start of a window drag instead: the field does
+    /// not open if the window has moved since, or if the button that might
+    /// be moving it is still down.
+    private func rename(
+        _ id: TabID, after delay: TimeInterval = 0, unlessMovedFrom origin: NSPoint? = nil
+    ) {
+        callOffRename()
+        let ticket = renameTicket
+        for open in cells { open.finishRenaming(keep: true) }
+        let begin = { [weak self] in
+            guard let self, self.renameTicket == ticket else { return }
+            self.callOffRename()
+            guard let window = self.window, window.isKeyWindow,
+                  !self.isHiddenOrHasHiddenAncestor,
+                  let cell = self.cells.first(where: { $0.tabID == id }),
+                  delay == 0 || cell.isActive
+            else { return }
+            if let origin,
+               window.frame.origin != origin || NSEvent.pressedMouseButtons & 1 != 0 {
+                Trace.log("strip", "the press on \(id.root) was a drag")
+                return
+            }
+            guard cell.beginRenaming() else { return }
+            self.watchPresses()
+            Trace.log("strip", "renaming \(id.root)")
+            self.updateWindowDragging(
+                pointerAt: self.convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        }
+        guard delay > 0 else {
+            DispatchQueue.main.async(execute: begin)
+            return
+        }
+        // Anything else done during the pause — a click in the terminal, a
+        // key typed into it — means the click on the name was not asking
+        // for one. Finder calls its rename off the same way, and a field
+        // opened regardless would take the keystrokes meant for the shell.
+        renameWatch = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]
+        ) { [weak self] event in
+            MainActor.assumeIsolated { self?.callOffRename() }
+            return event
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: begin)
+    }
+
+    /// Settle the field on a press that would not settle it by itself.
+    ///
+    /// Most presses end it by taking the keyboard — the terminal, a field in
+    /// the sidebar, the overlay. The rest take nothing: the bare row, the
+    /// titlebar, the sidebar's ground, the toggle. Under those the field
+    /// stayed open with its caret, after a click that meant to leave it, and
+    /// took the next keystrokes as more of the name. Kept, as a click that
+    /// does take the keyboard keeps it.
+    private func watchPresses() {
+        guard fieldWatch == nil else { return }
+        fieldWatch = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self, event.window === self.window,
+                      let open = self.cells.first(where: \.isRenaming)
+                else { return }
+                let point = self.convert(event.locationInWindow, from: nil)
+                // A press in the field places the caret or selects. A press on
+                // a tab is the row's own, and `carry` settles the field itself,
+                // having first read what the press was on.
+                if let field = open.editorFrame,
+                   open.convert(field, to: self).contains(point) { return }
+                if event.type == .leftMouseDown, self.tab(at: point) != nil { return }
+                open.finishRenaming(keep: true)
+            }
+            return event
+        }
+    }
+
+    /// What a cell's field came to, passed on a turn later.
+    ///
+    /// Later, because most fields end by losing the keyboard — a click in the
+    /// terminal or on another tab, ⌘1–9, ⌘P — and the keyboard is moved from
+    /// inside somebody else's render. Answering there would dispatch inside a
+    /// dispatch and render a snapshot while the last one was still going up.
+    private func renamed(_ id: TabID, to name: String?) {
+        if let fieldWatch, !cells.contains(where: \.isRenaming) {
+            NSEvent.removeMonitor(fieldWatch)
+            self.fieldWatch = nil
+        }
+        if let window {
+            updateWindowDragging(
+                pointerAt: convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let name {
+                Trace.log("strip", "renamed \(id.root)")
+                self.onRename?(id, name)
+            } else if self.keyboardIsLoose {
+                // Nothing to keep, and the keyboard went nowhere on the way
+                // out, so it goes back to the terminal. A field left by a
+                // click somewhere else leaves the keyboard where that click
+                // put it.
+                self.onRename?(id, nil)
+            }
+        }
+    }
+
+    /// Whether nobody has the keyboard: the window itself, or a field in
+    /// this row that has since been put away.
+    private var keyboardIsLoose: Bool {
+        guard let window else { return false }
+        let holder = window.firstResponder
+        if holder == nil || holder === window { return true }
+        guard let view = holder as? NSView, view.isDescendant(of: self) else { return false }
+        return !cells.contains { $0.isRenaming }
+    }
+
+    /// A row put away — vertical tabs — settles the name being typed in it,
+    /// and calls off one still being waited for.
+    override func viewDidHide() {
+        super.viewDidHide()
+        callOffRename()
+        for cell in cells { cell.finishRenaming(keep: true) }
     }
 
     /// Untinted glass at rest, which refracts darker than the bar and reads
@@ -560,10 +792,6 @@ final class TabStripView: NSView {
         super.viewWillMove(toWindow: newWindow)
     }
 
-    @objc private func newTabPressed() {
-        onNewTab?()
-    }
-
     @objc private func goToPressed() {
         onGoTo?()
     }
@@ -575,6 +803,10 @@ final class TabStripView: NSView {
     /// Colours resolved from the terminal background's luminance, so the bar
     /// belongs to whatever theme the terminal is wearing.
     struct Palette: Equatable {
+        /// Whether the ground is dark: the question every colour here is an
+        /// answer to, kept for the colours that come from elsewhere and ask
+        /// it too — Claude Code's, for its modes.
+        let dark: Bool
         let text: NSColor
         let dimText: NSColor
         /// A title under the pointer. Between the two above on purpose: a tab
@@ -585,8 +817,9 @@ final class TabStripView: NSView {
         let selectedFill: NSColor
         /// The faint capsule an unselected tab wears under the pointer.
         let hoverFill: NSColor
-        /// The hairline around the selected tab, and the "+" button's ground.
+        /// The hairline around the selected tab.
         let edge: NSColor
+        /// The round buttons' ground where there is no glass to stand them on.
         let controlFill: NSColor
         /// What glass is aimed at. Refraction alone comes out darker than a
         /// dark bar, and the shape this is modelled on is lighter than one.
@@ -601,6 +834,7 @@ final class TabStripView: NSView {
             let dark = luminance < 0.5
             let ink: NSColor = dark ? .white : .black
             return Palette(
+                dark: dark,
                 text: ink.withAlphaComponent(dark ? 0.92 : 0.85),
                 dimText: ink.withAlphaComponent(0.45),
                 hoverText: ink.withAlphaComponent(dark ? 0.72 : 0.66),
@@ -619,6 +853,10 @@ final class TabStripView: NSView {
 final class TabCellView: NSView {
     var onSelect: ((TabID) -> Void)?
     var onClose: ((TabID) -> Void)?
+    /// What the field came to: the name typed, or nil for nothing to keep.
+    var onRename: ((TabID, String?) -> Void)?
+    /// "Rename Tab…" from the menu. The row decides when the field opens.
+    var onRenameAsked: ((TabID) -> Void)?
 
     private var item: SessionSnapshot.StripItem?
     private var palette: TabStripView.Palette?
@@ -667,6 +905,22 @@ final class TabCellView: NSView {
     private let shortcutLabel = NSTextField(labelWithString: "")
     private let closeButton = NSButton()
 
+    /// The field a new name is typed into, laid over the title while it is.
+    ///
+    /// A field of its own rather than the title made editable. The title is
+    /// rewritten whenever its program retitles itself — several times a
+    /// second while Claude Code works — and a title that was also the field
+    /// would take back every letter as it was typed.
+    private let editor = NSTextField()
+    /// The tab the field is naming, taken when it opened. Cells are reused by
+    /// place, not by tab, and by the time the name is settled this cell may
+    /// be showing another one.
+    private(set) var renaming: TabID?
+    /// What the field opened with, so that leaving it untouched can be told
+    /// apart from choosing that name: a title kept by accident would stop
+    /// following its program, and nobody would know why.
+    private var seed = ""
+
     /// How much of the row the fill leaves alone, so a tab reads as a shape
     /// inside the titlebar rather than as a full-height block. Taken off both
     /// edges, so the capsule is two points shorter than this number suggests.
@@ -712,6 +966,24 @@ final class TabCellView: NSView {
         closeButton.isHidden = true
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(closeButton)
+
+        // Bare text in the title's place and weight, so that a tab being
+        // named still looks like a tab. The selection shows it is a field.
+        editor.isBezeled = false
+        editor.drawsBackground = false
+        editor.focusRingType = .none
+        editor.isEditable = true
+        editor.isSelectable = true
+        editor.font = .systemFont(ofSize: 12, weight: .medium)
+        editor.alignment = .center
+        editor.usesSingleLineMode = true
+        editor.maximumNumberOfLines = 1
+        editor.cell?.wraps = false
+        editor.cell?.isScrollable = true
+        editor.isHidden = true
+        editor.delegate = self
+        editor.setAccessibilityLabel("Tab Name")
+        addSubview(editor)
 
         labelCenter = label.centerXAnchor.constraint(equalTo: centerXAnchor)
         labelLeading = label.leadingAnchor.constraint(
@@ -761,11 +1033,37 @@ final class TabCellView: NSView {
         // a tab too narrow to name is not one to be closed by aim; the title
         // is last, and truncates. Each thing that leaves gives its room back
         // to the title.
-        shortcutLabel.isHidden = shortcut == nil || bounds.width < 160
-        closeButton.isHidden = !hovered || alone || bounds.width < 96
+        //
+        // A tab being named shows the name and nothing else: the number and
+        // the close button would only crowd the field, and a close button
+        // appearing under the pointer mid-word is a tab closed by accident.
+        let naming = renaming != nil
+        shortcutLabel.isHidden = naming || shortcut == nil || bounds.width < 160
+        closeButton.isHidden = naming || !hovered || alone || bounds.width < 96
         labelLeading.constant = closeButton.isHidden ? 8 : 28
         labelTrailing.constant = shortcutLabel.isHidden ? -8 : -36
         labelCenter.constant = titleOffset
+
+        // Shown and hidden here rather than where the naming starts and
+        // stops. It mostly stops because the keyboard has just gone
+        // somewhere else, and hiding a field in the middle of that — while
+        // AppKit is still handing the keyboard over — makes it choose a new
+        // holder of its own, from inside the handover.
+        label.isHidden = naming
+        editor.isHidden = !naming
+        if naming {
+            // On the title's centre, which for a lone tab is the window's.
+            // As wide as a name needs rather than as the tab is: a lone tab
+            // spans the whole row, and a field that wide would take presses
+            // meant for the titlebar around it.
+            let height = ceil(editor.intrinsicContentSize.height)
+            let width = max(0, min(bounds.width - 28, 320))
+            let centre = bounds.midX + titleOffset
+            let x = min(max(14, centre - width / 2), bounds.width - 14 - width)
+            editor.frame = NSRect(
+                x: x.rounded(), y: ((bounds.height - height) / 2).rounded(),
+                width: width, height: height)
+        }
     }
 
     func apply(
@@ -790,9 +1088,14 @@ final class TabCellView: NSView {
         // title with nothing to choose between — neither is an offer, so
         // neither takes one.
         let offering = hovered && !item.isActive && !alone
-        label.textColor = item.isActive || alone
+        let ink = item.isActive || alone
             ? palette.text
             : (offering ? palette.hoverText : palette.dimText)
+        // A tab running Claude Code in one of its modes wears that mode's
+        // colour, the one its footer is written in, so a tab left in bypass
+        // reads as one from across the row. Only the colour: the weight and
+        // the capsule still say which tab you are in.
+        label.textColor = item.claudeMode?.color(dark: palette.dark) ?? ink
         hoverFill.layer?.backgroundColor = palette.hoverFill.cgColor
         offer(offering)
 
@@ -920,6 +1223,61 @@ final class TabCellView: NSView {
 
     /// Which tab this cell is showing, for the row that reorders them.
     var tabID: TabID? { item?.id }
+    var isActive: Bool { item?.isActive ?? false }
+    var isRenaming: Bool { renaming != nil }
+    /// Where the field is while a name is being typed, in this cell's
+    /// coordinates.
+    var editorFrame: NSRect? { renaming == nil ? nil : editor.frame }
+
+    /// Whether a point in this cell is on the tab's name rather than beside
+    /// it. A few points of grace around the text, which is small to aim at.
+    func titleContains(_ point: NSPoint) -> Bool {
+        !label.isHidden && label.frame.insetBy(dx: -4, dy: -4).contains(point)
+    }
+
+    /// Open the field over the title, holding the title as it reads now.
+    ///
+    /// Without the marks: the busy `✳` and the spinner's frames are the
+    /// program talking, not part of the name, and a name kept with one in it
+    /// would show a busy tab long after the work was done.
+    @discardableResult
+    func beginRenaming() -> Bool {
+        guard renaming == nil, let item, let palette, let window else { return false }
+        renaming = item.id
+        seed = Session.plainTitle(item.title, fallback: "")
+        editor.stringValue = seed
+        editor.textColor = palette.text
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        guard window.makeFirstResponder(editor) else {
+            renaming = nil
+            needsLayout = true
+            return false
+        }
+        // The caret in the title's own ink. The field editor is shared and
+        // handed round, so it is said each time, as the picker does.
+        if let text = editor.currentEditor() as? NSTextView {
+            text.insertionPointColor = palette.text
+            text.selectAll(nil)
+        }
+        return true
+    }
+
+    /// Settle the field from outside it — Return, Escape, a press elsewhere
+    /// in the row, or the row finding its tab gone. `keep` is whether what
+    /// was typed is the answer.
+    func finishRenaming(keep: Bool) {
+        guard let id = renaming else { return }
+        let typed = editor.currentEditor()?.string ?? editor.stringValue
+        renaming = nil
+        // The keyboard is let go of while the field is still showing, and
+        // left with the window until the answer comes back and puts it on
+        // the terminal. A field hidden while it holds the keyboard hands it
+        // to whatever AppKit picks next.
+        if editor.currentEditor() != nil { window?.makeFirstResponder(nil) }
+        needsLayout = true
+        onRename?(id, keep && typed != seed ? typed : nil)
+    }
 
     /// Every press inside a tab is the tab's, wherever it lands.
     ///
@@ -927,12 +1285,37 @@ final class TabCellView: NSView {
     /// lands on one of those is that view's press, not the cell's — which
     /// meant it never reached the code that moves tabs at all. The close
     /// button is a control and keeps its clicks; everything else in here is
-    /// decoration.
+    /// decoration — except a name being typed, whose presses place the caret
+    /// and select, as in any field.
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
         guard bounds.contains(local) else { return nil }
         if !closeButton.isHidden, closeButton.frame.contains(local) { return closeButton }
+        if renaming != nil, editor.frame.contains(local) {
+            return editor.hitTest(local) ?? editor
+        }
         return self
+    }
+
+    /// A tab's own menu: naming it and closing it, the two things done to
+    /// one tab rather than to the row.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard item != nil else { return nil }
+        let menu = NSMenu()
+        let rename = NSMenuItem(
+            title: "Rename Tab…", action: #selector(renamePicked), keyEquivalent: "")
+        rename.target = self
+        menu.addItem(rename)
+        menu.addItem(.separator())
+        let close = NSMenuItem(
+            title: "Close Tab", action: #selector(closePressed), keyEquivalent: "")
+        close.target = self
+        menu.addItem(close)
+        return menu
+    }
+
+    @objc private func renamePicked() {
+        if let item { onRenameAsked?(item.id) }
     }
 
     /// The press is handed to the row rather than answered here: it might be
@@ -955,5 +1338,41 @@ final class TabCellView: NSView {
 
     @objc private func closePressed() {
         if let item { onClose?(item.id) }
+    }
+}
+
+// MARK: - keyboard
+
+extension TabCellView: NSTextFieldDelegate {
+    /// Return keeps the name, and so do Tab and ⇧Tab, which have nowhere else
+    /// in the row to go; Escape takes it back.
+    func control(
+        _ control: NSControl, textView: NSTextView, doCommandBy selector: Selector
+    ) -> Bool {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)),
+             #selector(NSResponder.insertTab(_:)),
+             #selector(NSResponder.insertBacktab(_:)):
+            finishRenaming(keep: true)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            finishRenaming(keep: false)
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The keyboard went somewhere else — a click in the terminal or on
+    /// another tab, ⌘1–9, ⌘P. What was typed is kept, as Finder keeps it.
+    ///
+    /// Also told when the field is settled from outside, since that lets go
+    /// of the keyboard too; by then there is nothing left here to settle.
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard let id = renaming else { return }
+        renaming = nil
+        needsLayout = true
+        let typed = editor.stringValue
+        onRename?(id, typed != seed ? typed : nil)
     }
 }
