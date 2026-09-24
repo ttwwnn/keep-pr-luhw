@@ -55,6 +55,25 @@ final class TerminalSurfaceView: NSView {
     /// Whether the pointer is currently showing the column-selection shape.
     private var showingColumnCursor = false
 
+    /// What the input system is still putting together: an accent waiting
+    /// for its letter, or a word an input method has not committed yet.
+    ///
+    /// Held here and shown by libghostty as preedit, because until it is
+    /// committed it is not input — the program on the other end must never
+    /// see the accent on its own and then the letter on its own.
+    private var markedText = NSMutableAttributedString()
+
+    /// The text the input system committed during the key press being
+    /// handled, or nil outside one — which is how `insertText` tells a key
+    /// it is answering from dictation or the character viewer arriving on
+    /// their own.
+    private var keyTextAccumulator: [String]?
+
+    /// The commands AppKit mapped the key being handled to — insertNewline:,
+    /// deleteBackward:, moveLeft: — or nil outside a key press. A key that
+    /// comes back as a command after a commit was not spent on committing.
+    private var keyCommands: [Selector]?
+
     init(workspace: String, tab: UInt32) {
         self.workspace = workspace
         self.tab = tab
@@ -712,18 +731,244 @@ final class TerminalSurfaceView: NSView {
         return nil
     }
 
+    /// A key press, offered to the input system before the terminal.
+    ///
+    /// The terminal used to be handed every press as it came, which is right
+    /// for a key and wrong for a letter somebody is still composing: on a
+    /// layout with dead keys, ´ followed by e is one character, and only the
+    /// input system knows that. Asked nothing, it put nothing together — the
+    /// accent was dropped and the e arrived bare, so "é" typed as "e" and
+    /// "não" as "nao". This is the path Ghostty's own view takes with the
+    /// same library.
+    ///
+    /// On Brazilian - Pro the dead keys are not only accents: ' " ` ~ and ^
+    /// all wait for the next key, so a closing quote is marked text right up
+    /// until whatever is pressed after it. Everything below that talks about
+    /// "the accent" is just as often the quote at the end of a command line.
+    ///
+    /// A chord is still a key. Control and command make shortcuts, not text,
+    /// and option is alt here (see `text(of:)`), so a press holding any of
+    /// them skips composition and is sent the way it always was — once
+    /// whatever was waiting has been committed, the way AppKit's own text
+    /// views commit it. The exception is an input method in the middle of a
+    /// word: its editing keys (control-h, control-k) are its own, and a
+    /// control chord goes to it. Option and command chords never do — through
+    /// the key bindings option-b would type ∫ instead of reaching the shell
+    /// as alt-b.
     override func keyDown(with event: NSEvent) {
-        send(event, action: GHOSTTY_ACTION_PRESS)
+        guard surface != nil else { return }
+        if Self.isChord(event), !(markedText.length > 0 && inputMethodActive && Self.isControlChord(event)) {
+            let pending = markedText.length > 0
+            commitComposition()
+            // After a dead key the event still carries it: ⌘V arrives as "'v",
+            // which no menu item matches and which would type the quote a
+            // second time. So the key is asked again, from its key code,
+            // without the dead key — option still taken out, as `text(of:)`
+            // takes it out. Only a key that carries text at all: control-space
+            // is a NUL, and asked again it would come back as a space.
+            let text = pending && !Self.text(of: event).isEmpty
+                ? event.characters(byApplyingModifiers: event.modifierFlags.subtracting(.option)) ?? ""
+                : nil
+            send(event, action: GHOSTTY_ACTION_PRESS, text: text)
+            return
+        }
+
+        let markedBefore = markedText.string
+        let composingBefore = !markedBefore.isEmpty
+        keyTextAccumulator = []
+        keyCommands = []
+        defer {
+            keyTextAccumulator = nil
+            keyCommands = nil
+        }
+        interpretKeyEvents([event])
+        syncPreedit(clearIfNeeded: composingBefore)
+
+        // Composing either because something is marked now, or because it
+        // was and this press is what ended it.
+        let composing = markedText.length > 0 || composingBefore
+        var committed = (keyTextAccumulator ?? [])
+            .filter { !Self.isComposingControl($0, composing: composing) }
+        let commands = keyCommands ?? []
+
+        if composingBefore, !committed.isEmpty {
+            // A control chord an input method let through after committing
+            // its word comes back from the key bindings as its own character —
+            // control-1 as "1", and control-shift-9 as "9", since control
+            // keeps shift from applying. That is the chord, not text, and it
+            // is sent as the chord, carrying that character as it would with
+            // nothing composed: the legacy and modifyOtherKeys encoders need
+            // it to encode control-comma at all.
+            var handedBack = !commands.isEmpty
+            var replayText = ""
+            if Self.isChord(event), committed.count > 1, let last = committed.last,
+               [event.charactersIgnoringModifiers,
+                event.characters(byApplyingModifiers: event.modifierFlags)].contains(last) {
+                committed.removeLast()
+                handedBack = true
+                replayText = last
+            }
+            // Backspace taking a dead key back. The layout has no cancel for
+            // it: AppKit commits the accent and then asks for deleteBackward:,
+            // and a text view inserting one and deleting the other ends with
+            // neither. So does this, without sending either — a quote handed
+            // to the program and then a DEL is not the same as nothing, and a
+            // ˜ or ˆ is more than one byte for the program to take back.
+            if committed == [markedBefore], commands.contains(Self.deleteBackward) {
+                return
+            }
+            // The press finished a composition: "é" out of ´ and e, which is
+            // text with no key behind it, and the e is spent. A key that
+            // merely ended it — return, tab, escape, an arrow — is not: AppKit
+            // commits the accent and hands the key back as a command, and the
+            // terminal gets the key after the accent, as a text view would.
+            for text in committed { sendCommitted(text) }
+            if replaysAfterCommit(event, handedBack: handedBack) {
+                // Not the event's characters: those are the accent and the
+                // key together ("'\r"), and the accent is sent.
+                send(event, action: GHOSTTY_ACTION_PRESS, text: replayText)
+            }
+            return
+        }
+        if !committed.isEmpty {
+            for text in committed {
+                send(event, action: GHOSTTY_ACTION_PRESS, text: text)
+            }
+            return
+        }
+        if Self.isComposingControl(event.characters, composing: composing) { return }
+        // Nothing committed: an ordinary key (return, the arrows, backspace),
+        // or the dead key itself, which libghostty is told is composing so
+        // that it encodes nothing for it.
+        send(event, action: GHOSTTY_ACTION_PRESS, composing: composing)
     }
 
     override func keyUp(with event: NSEvent) {
         send(event, action: GHOSTTY_ACTION_RELEASE)
     }
 
-    private func send(_ event: NSEvent, action: ghostty_input_action_e) {
+    /// A press that holds control, option or command.
+    private static func isChord(_ event: NSEvent) -> Bool {
+        !event.modifierFlags.isDisjoint(with: [.control, .option, .command])
+    }
+
+    /// A chord of control alone: the only kind an input method has uses for.
+    private static func isControlChord(_ event: NSEvent) -> Bool {
+        event.modifierFlags.contains(.control)
+            && event.modifierFlags.isDisjoint(with: [.option, .command])
+    }
+
+    private static let deleteBackward = #selector(NSStandardKeyBindingResponding.deleteBackward(_:))
+
+    /// Whether a key that ended a composition should also act as itself.
+    ///
+    /// When AppKit handed it back, yes: that is the input system saying the
+    /// key was not spent. An input method confirming a word on return asks
+    /// for no command, and its return is not replayed. The arrows are
+    /// Ghostty's rule and replay regardless — except an unmodified left
+    /// arrow after an input method commits, because AppKit already leaves
+    /// the caret in place after Korean input methods commit. After a dead
+    /// key it moves.
+    private func replaysAfterCommit(_ event: NSEvent, handedBack: Bool) -> Bool {
+        let modified = !event.modifierFlags.isDisjoint(with: [.shift, .control, .option, .command])
+        if event.keyCode == 123, !modified, inputMethodActive { return false }
+        if handedBack { return true }
+        switch event.keyCode {
+        case 124, 125, 126: return true  // right, down, up
+        case 123: return modified  // left
+        default: return false
+        }
+    }
+
+    /// Whether the text being composed comes from an input method (Japanese,
+    /// Chinese, Korean) rather than a keyboard layout's dead keys. The two
+    /// want different things from a chord and from a left arrow.
+    private var inputMethodActive: Bool {
+        guard let source = inputContext?.selectedKeyboardInputSource else { return false }
+        return !source.contains(".keylayout.")
+    }
+
+    /// A lone control character that arrived while composing. It belongs to
+    /// the input method, and passing it on would reach the program as a
+    /// keystroke nobody meant for it.
+    private static func isComposingControl(_ text: String?, composing: Bool) -> Bool {
+        guard composing, let text else { return false }
+        let scalars = text.unicodeScalars
+        guard let scalar = scalars.first, scalars.count == 1 else { return false }
+        return scalar.value < 0x20
+    }
+
+    /// Text the input system committed, sent as typed input rather than as
+    /// a paste. It has no key behind it, so none is claimed: no key code, no
+    /// modifiers.
+    private func sendCommitted(_ text: String) {
+        noteActivity()
+        guard let surface, !text.isEmpty else { return }
+        var key = ghostty_input_key_s()
+        key.action = GHOSTTY_ACTION_PRESS
+        key.mods = GHOSTTY_MODS_NONE
+        key.consumed_mods = GHOSTTY_MODS_NONE
+        key.keycode = 0
+        key.unshifted_codepoint = 0
+        key.composing = false
+        let taken = text.withCString { ptr in
+            key.text = ptr
+            return ghostty_surface_key(surface, key)
+        }
+        Trace.log("key", "commit \(text.unicodeScalars.count) scalar(s) \(taken ? "taken" : "IGNORED")")
+    }
+
+    /// Tell libghostty what is being composed, so it draws it at the cursor.
+    private func syncPreedit(clearIfNeeded: Bool = true) {
+        guard let surface else { return }
+        if markedText.length > 0 {
+            let string = markedText.string
+            string.withCString { ptr in
+                ghostty_surface_preedit(surface, ptr, UInt(string.utf8.count))
+            }
+        } else if clearIfNeeded {
+            ghostty_surface_preedit(surface, nil, 0)
+        }
+    }
+
+    /// Finish whatever is being composed as it stands, before something that
+    /// is not text — a chord, a paste — lands after it.
+    ///
+    /// What was waiting is committed, not dropped: on this layout it is as
+    /// likely to be the closing quote of `echo "hi"` as an accent, and ⌃A to
+    /// edit that line must not take the quote with it. AppKit's text views
+    /// commit it too.
+    ///
+    /// The input context has to be reset afterwards, not just told to discard.
+    /// `discardMarkedText` leaves a keyboard layout's dead key stuck in it:
+    /// every later key is swallowed without a single callback, and the pane
+    /// goes back to typing "e" for "é" until focus leaves it. Deactivating
+    /// and reactivating clears that. An input method may commit its own text
+    /// on the way out; if it does, that is what is sent, and only once.
+    private func commitComposition() {
+        guard markedText.length > 0 else { return }
+        let pending = markedText.string
+        markedText = NSMutableAttributedString()
+        keyTextAccumulator = []
+        inputContext?.discardMarkedText()
+        inputContext?.deactivate()
+        inputContext?.activate()
+        let flushed = keyTextAccumulator ?? []
+        keyTextAccumulator = nil
+        markedText = NSMutableAttributedString()
+        syncPreedit()
+        sendCommitted(flushed.isEmpty ? pending : flushed.joined())
+    }
+
+    private func send(
+        _ event: NSEvent,
+        action: ghostty_input_action_e,
+        text explicit: String? = nil,
+        composing: Bool = false
+    ) {
         noteActivity()
         guard let surface else { return }
-        let text = Self.text(of: event)
+        let text = explicit.map { Self.printable($0) } ?? Self.text(of: event)
         var key = ghostty_input_key_s()
         key.action = action
         let mods = Self.mods(from: event.modifierFlags)
@@ -746,7 +991,7 @@ final class TerminalSurfaceView: NSView {
         // were the key's letter is the one thing this event carried that a
         // working one does not.
         key.unshifted_codepoint = Self.unshiftedCodepoint(of: event)
-        key.composing = false
+        key.composing = composing
 
         // What the terminal made of it, which is one bit and the only account
         // there is of a key that produced nothing: true means something
@@ -808,7 +1053,13 @@ final class TerminalSurfaceView: NSView {
         } else {
             source = event.characters
         }
-        guard let characters = source, let first = characters.unicodeScalars.first
+        return printable(source)
+    }
+
+    /// The characters, unless they are one of the things above that is not
+    /// text: a function key's private-use marker or a control character.
+    private static func printable(_ characters: String?) -> String {
+        guard let characters, let first = characters.unicodeScalars.first
         else { return "" }
         if (0xF700...0xF8FF).contains(first.value) { return "" }
         if first.value < 0x20 || first.value == 0x7F { return "" }
@@ -1018,7 +1269,12 @@ final class TerminalSurfaceView: NSView {
     /// the ghostty binding of the same name: the terminal owns the selection
     /// and the scrollback, so it is the only thing that can answer.
     @objc func copy(_ sender: Any?) { perform("copy_to_clipboard") }
-    @objc func paste(_ sender: Any?) { perform("paste_from_clipboard") }
+    @objc func paste(_ sender: Any?) {
+        // ⌘V is the menu's, so keyDown never sees it: a quote left waiting
+        // would otherwise land after the pasted text instead of before it.
+        commitComposition()
+        perform("paste_from_clipboard")
+    }
     @objc override func selectAll(_ sender: Any?) { perform("select_all") }
 
     // MARK: - clipboard
@@ -1099,6 +1355,100 @@ final class TerminalSurfaceView: NSView {
         }
 
         ghostty_surface_mouse_scroll(surface, x, y, mods)
+    }
+}
+
+// MARK: - composing text
+
+/// What the input system needs from a view before it will compose for it.
+///
+/// Without this conformance `interpretKeyEvents` has nobody to put a dead
+/// key's accent on or to hand the finished "é" to, and the view has no input
+/// context at all. Adapted from Ghostty's own surface view, less what Keep
+/// does not have: quick look, services and a selection the input system can
+/// read back.
+extension TerminalSurfaceView: NSTextInputClient {
+    func hasMarkedText() -> Bool { markedText.length > 0 }
+
+    func markedRange() -> NSRange {
+        markedText.length > 0 ? NSRange(location: 0, length: markedText.length) : NSRange()
+    }
+
+    func selectedRange() -> NSRange { NSRange() }
+
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        switch string {
+        case let attributed as NSAttributedString:
+            markedText = NSMutableAttributedString(attributedString: attributed)
+        case let plain as String:
+            markedText = NSMutableAttributedString(string: plain)
+        default:
+            return
+        }
+        // Outside a key press — the layout changed while an accent was
+        // waiting — nothing else is going to show it, so show it now.
+        if keyTextAccumulator == nil { syncPreedit() }
+    }
+
+    func unmarkText() {
+        guard markedText.length > 0 else { return }
+        markedText = NSMutableAttributedString()
+        syncPreedit()
+    }
+
+    func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+
+    func attributedSubstring(
+        forProposedRange range: NSRange, actualRange: NSRangePointer?
+    ) -> NSAttributedString? { nil }
+
+    func characterIndex(for point: NSPoint) -> Int { NSNotFound }
+
+    /// Where the candidate window and the dictation indicator go: at the
+    /// cursor, which libghostty knows and the view does not.
+    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        guard let surface else { return NSRect(origin: frame.origin, size: .zero) }
+        var x: Double = 0
+        var y: Double = 0
+        var width: Double = 0
+        var height: Double = 0
+        ghostty_surface_ime_point(surface, &x, &y, &width, &height)
+        // A range with nothing in it is a caret, and a caret has no width —
+        // the dictation indicator starts wherever this rectangle does.
+        if range.length == 0 { width = 0 }
+        // libghostty counts down from the top; AppKit counts up from the bottom.
+        let inView = NSRect(x: x, y: bounds.height - y, width: width, height: height)
+        let inWindow = convert(inView, to: nil)
+        return window?.convertToScreen(inWindow) ?? inWindow
+    }
+
+    func insertText(_ string: Any, replacementRange: NSRange) {
+        let text: String
+        switch string {
+        case let attributed as NSAttributedString: text = attributed.string
+        case let plain as String: text = plain
+        default: return
+        }
+        // Whatever was being composed is finished the moment text arrives.
+        unmarkText()
+        // During a key press the press sends it, knowing which key it was.
+        if keyTextAccumulator != nil {
+            keyTextAccumulator?.append(text)
+            return
+        }
+        // Dictation, the character viewer, an input method committing on its
+        // own time: typed input all the same, never a paste.
+        sendCommitted(text)
+    }
+
+    /// Commands the key bindings map a key to — insertNewline:, moveLeft:,
+    /// deleteBackward: — are not carried out here: the terminal gets the key
+    /// itself from `keyDown` and knows what it means. They are only noted, so
+    /// `keyDown` can tell a key AppKit handed back from one it spent. Doing
+    /// nothing else also keeps AppKit from beeping at a command nobody
+    /// answered.
+    override func doCommand(by selector: Selector) {
+        keyCommands?.append(selector)
     }
 }
 

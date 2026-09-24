@@ -457,6 +457,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 // Top-level code runs on the main actor when the entry point awaits it.
 MainActor.assumeIsolated {
+    // A terminal view that composes text is, to macOS, a text view, and
+    // holding a key down in one opens the accent picker instead of repeating
+    // the key — hjkl in an editor would stop after one step. Ghostty turns the
+    // picker off for the same reason; accents still come from dead keys.
+    UserDefaults.standard.register(defaults: ["ApplePressAndHoldEnabled": false])
     let delegate = AppDelegate()
     let app = NSApplication.shared
     app.delegate = delegate
