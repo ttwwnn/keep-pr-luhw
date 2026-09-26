@@ -91,6 +91,7 @@ final class Session {
     private struct Arrangement: Equatable {
         let window: WindowID
         let workspaces: [String]
+        let showing: [String]
         let tab: TabID?
     }
 
@@ -118,7 +119,12 @@ final class Session {
     /// workspaces all still exist.
     func addWindow(_ id: WindowID, renderer: SessionRendering, carrying: [String]) {
         renderers[id] = WeakRenderer(value: renderer)
-        if views[id] == nil { views[id] = WindowView(workspaces: carrying) }
+        // Pruned to what is running, as the first window's list is: a name
+        // listed but not running is waiting for its workspace — kept in
+        // `remembered` — and a window listing it would count as having it the
+        // moment it came back, leaving every other window that had it without.
+        let live = Set(workspaces.map(\.name))
+        if views[id] == nil { views[id] = WindowView(workspaces: carrying.filter(live.contains)) }
         if !carrying.isEmpty { remembered[id] = carrying }
         if !windowOrder.contains(id) { windowOrder.append(id) }
         publish()
@@ -128,9 +134,9 @@ final class Session {
     /// with the workspaces it carried that are not running now, in their
     /// places, so that a crash before they come back does not forget them.
     /// Read-only: `Session` remains the only writer of a `WindowView`.
-    func placement(of id: WindowID) -> (workspaces: [String], tab: TabID?)? {
+    func placement(of id: WindowID) -> (workspaces: [String], showing: [String], tab: TabID?)? {
         guard let view = views[id] else { return nil }
-        return (arrangement(of: id), view.tab)
+        return (arrangement(of: id), view.workspaces, view.tab)
     }
 
     func removeWindow(_ id: WindowID) {
@@ -194,9 +200,10 @@ final class Session {
     }
 
     /// Bring the app up. `carrying` is what the first window had last time,
-    /// or nil on a first run — which is not the same as an empty list, and
-    /// the difference is the whole point: a remembered empty window opens
-    /// empty, an unremembered one opens holding everything.
+    /// or nil when nothing was written down for it: a first run, or the app
+    /// last closed by closing its window. Either way it ends up holding
+    /// everything nobody put away — see `windowsReady`, which finishes the
+    /// layout once every window of this run exists.
     func start(
         firstWindow: WindowID,
         renderer: SessionRendering,
@@ -223,18 +230,12 @@ final class Session {
             refreshFromDaemon()
         }
         // The first window carries what it carried, pruned to what the daemon
-        // still has. Never having been asked, it carries everything there is:
-        // a window opened later starts empty on purpose, but this one starting
-        // empty would read as the app having lost the lot.
+        // still has; the rest — everything, when nothing was written down — is
+        // placed by `windowsReady`, once the other windows have taken theirs.
         let live = workspaces.map(\.name)
         views[firstWindow]?.workspaces = carrying.map { remembered in
             remembered.filter(live.contains)
-        } ?? live
-        // And whatever is running that no window carries and nobody put away:
-        // made while the app was not running — the tabs a reboot took, put
-        // back while it was down — or left out of a list written before this
-        // rule existed.
-        placeOrphans()
+        } ?? []
         // The tab it was left on, if that tab is still there. Chosen here
         // rather than switched to afterwards: a second activation would build
         // a surface, and a client, for a tab nobody asked to see.
@@ -244,12 +245,39 @@ final class Session {
                 ? workspaces.first { $0.name == id.workspace }?.tabs.first { $0.id == id }?.id
                 : nil
         }
-        if let remembered {
-            activate(remembered, in: firstWindow)
-        } else if let first = workspaces.first(where: { !$0.tabs.isEmpty }) {
-            activate(first.lastTabID ?? first.tabs.first?.id, in: firstWindow)
+        if let remembered { activate(remembered, in: firstWindow) }
+        publish()
+    }
+
+    /// Every window of this run exists and carries what it carried: give
+    /// whatever is running that no window carries and nobody put away a row
+    /// — made while the app was not running, the tabs a reboot took and put
+    /// back while it was down, or everything, for a window that remembered
+    /// nothing — and a tab to every window still showing none.
+    ///
+    /// After the windows, not in `start`: done with only the first window up,
+    /// it took what the others were about to carry, and every relaunch put
+    /// their workspaces in the first window's sidebar too.
+    func windowsReady() {
+        placeOrphans()
+        for id in windowOrder where views[id] != nil && views[id]?.tab == nil {
+            if let workspace = fallbackWorkspace(for: id) {
+                activate(workspace.lastTabID ?? workspace.tabs.first?.id, in: id)
+            }
         }
         publish()
+    }
+
+    /// Where a window with nothing to show goes: the first workspace it
+    /// carries that has a tab; failing that, the first one running that is
+    /// neither put away nor the quick terminal's.
+    private func fallbackWorkspace(for window: WindowID) -> WorkspaceEntity? {
+        let carried = views[window]?.workspaces ?? []
+        return carried.lazy.compactMap { name in
+            self.workspaces.first { $0.name == name && !$0.tabs.isEmpty }
+        }.first ?? workspaces.first {
+            !$0.tabs.isEmpty && $0.name != Self.quickWorkspace && !putAwayStore.contains($0.name)
+        }
     }
 
     /// One daemon poll, delivered by the poller. Reconciliation only: it can
@@ -344,6 +372,7 @@ final class Session {
                 changed = true
             }
         }
+        putAwayStore.noteRunning(alive)
         if placing, placeOrphans() { changed = true }
 
         if changed {
@@ -379,16 +408,25 @@ final class Session {
     private func placeOrphans() -> Bool {
         var carried = Set(views.values.flatMap(\.workspaces))
         var placed = false
+        let open = windowOrder.filter { views[$0] != nil }
         for workspace in workspaces where !workspace.tabs.isEmpty {
             let name = workspace.name
             guard !carried.contains(name), name != Self.quickWorkspace,
-                  !putAwayStore.contains(name), let window = home(for: name)
+                  !putAwayStore.contains(name)
             else { continue }
-            let list = views[window]?.workspaces ?? []
-            views[window]?.workspaces = Self.inserting(name, into: list, by: remembered[window])
-            carried.insert(name)
-            Trace.log("window", "\(window) takes \(name), which was in no window")
-            placed = true
+            // Every window that had it — a tab torn off into a second window
+            // leaves its workspace in both — or else the first.
+            var homes = open.filter { remembered[$0]?.contains(name) == true }
+            if homes.isEmpty, let first = open.first { homes = [first] }
+            for window in homes {
+                let list = views[window]?.workspaces ?? []
+                views[window]?.workspaces = Self.inserting(name, into: list, by: remembered[window])
+                Trace.log("window", "\(window) takes \(name), which was in no window")
+            }
+            if !homes.isEmpty {
+                carried.insert(name)
+                placed = true
+            }
         }
         return placed
     }
@@ -399,7 +437,11 @@ final class Session {
     /// another window, was put away or was ended leaves the list.
     private func arrangement(of id: WindowID) -> [String] {
         var list = views[id]?.workspaces ?? []
-        let elsewhere = Set(views.filter { $0.key != id }.flatMap(\.value.workspaces))
+        // Taken by another window means shown in it: a name another window
+        // lists that is not running is waiting there too, not taken — a window
+        // restored at launch lists what it had before the daemon has it.
+        let live = Set(workspaces.map(\.name))
+        let elsewhere = Set(views.filter { $0.key != id }.flatMap(\.value.workspaces)).intersection(live)
         for name in remembered[id] ?? []
         where !list.contains(name) && !elsewhere.contains(name)
             && !putAwayStore.contains(name) && name != Self.quickWorkspace {
@@ -415,12 +457,6 @@ final class Session {
             remembered[id]?.removeAll { names.contains($0) }
         }
         for name in names { putAwayStore.remove(name) }
-    }
-
-    /// The open window that carried `name` last time, or the first open one.
-    private func home(for name: String) -> WindowID? {
-        let open = windowOrder.filter { views[$0] != nil }
-        return open.first { remembered[$0]?.contains(name) == true } ?? open.first
     }
 
     /// `name` put into `list` where `order` had it — just after the last
@@ -448,6 +484,7 @@ final class Session {
         daemonStart = start
         nameStore.validate(daemonStart: start)
         tabOrderStore.validate(daemonStart: start)
+        putAwayStore.validate(daemonStart: start)
         return true
     }
 
@@ -1024,7 +1061,7 @@ final class Session {
         SurfacePool.shared.discardAll(workspace: name)
         refreshFromDaemon()
         if workspace(for: window) == nil || workspace(for: window)?.tabs.isEmpty == true {
-            views[window]?.workspace = workspaces.first(where: { !$0.tabs.isEmpty })?.name
+            views[window]?.workspace = fallbackWorkspace(for: window)?.name
             if let workspace = workspace(for: window) {
                 activate(workspace.lastTabID ?? workspace.tabs.first?.id, in: window)
             }
@@ -1553,7 +1590,9 @@ final class Session {
         }
         putAwayStore.remove(views.values.flatMap(\.workspaces))
         let arrangement = windowOrder.map { id in
-            Arrangement(window: id, workspaces: remembered[id] ?? [], tab: views[id]?.tab)
+            Arrangement(
+                window: id, workspaces: remembered[id] ?? [],
+                showing: views[id]?.workspaces ?? [], tab: views[id]?.tab)
         }
         if arrangement != lastArrangement {
             lastArrangement = arrangement

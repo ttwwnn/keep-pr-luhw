@@ -109,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 width: frame.width,
                 height: frame.height,
                 workspaces: placement.workspaces,
+                showing: placement.showing,
                 tab: placement.tab
             )
         }
@@ -262,6 +263,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let tab = record?.tab { session.dispatch(.activateTab(tab), from: id) }
             }
         }
+        // Every window has taken what it carries: only now can what nobody
+        // carries be told apart.
+        session.windowsReady()
         controllers.first?.window?.makeKeyAndOrderFront(nil)
         let poller = DaemonPoller(session: session)
         poller.start()

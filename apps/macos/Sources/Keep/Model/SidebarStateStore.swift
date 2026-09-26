@@ -200,42 +200,85 @@ struct FileStamp: Equatable {
 /// left, and how they stay across a relaunch and across a reboot, when the
 /// tabs in them are put back. Every other running workspace is shown
 /// somewhere. Kept by name, which outlives a daemon.
+///
+/// With the start of the last daemon each one was seen running under. One
+/// that did not run at all under a daemon is forgotten when the next starts:
+/// it is not coming back, and a workspace made later under its name is a new
+/// one, which must not be born out of sight.
 @MainActor
 final class PutAwayStore {
-    private var names: Set<String>
+    private struct Contents: Codable {
+        /// The daemon this was last checked against, in seconds.
+        var daemonStart: Double?
+        /// Name → start of the last daemon it was seen running under; 0 for
+        /// not known.
+        var names: [String: Double] = [:]
+    }
+
+    private var contents: Contents
     private let file: URL
 
     init(directory: URL? = nil) {
         let dir = directory ?? stateDirectory()
         file = dir.appendingPathComponent("put-away.json")
-        names = Set((try? JSONDecoder().decode(
-            [String].self, from: Data(contentsOf: file)
-        )) ?? [])
+        let data = (try? Data(contentsOf: file)) ?? Data()
+        if let decoded = try? JSONDecoder().decode(Contents.self, from: data) {
+            contents = decoded
+        } else if let bare = try? JSONDecoder().decode([String].self, from: data) {
+            // An earlier build's plain list: kept, as though seen under an
+            // unknown daemon.
+            contents = Contents(daemonStart: nil, names: Dictionary(uniqueKeysWithValues: bare.map { ($0, 0) }))
+        } else {
+            contents = Contents()
+        }
     }
 
-    func contains(_ name: String) -> Bool { names.contains(name) }
+    func contains(_ name: String) -> Bool { contents.names[name] != nil }
 
     func insert(_ name: String) {
-        guard names.insert(name).inserted else { return }
+        guard contents.names[name] == nil else { return }
+        contents.names[name] = contents.daemonStart ?? 0
         write()
     }
 
     func remove(_ name: String) {
-        guard names.remove(name) != nil else { return }
+        guard contents.names.removeValue(forKey: name) != nil else { return }
         write()
     }
 
     /// Nothing a window carries is put away.
     func remove(_ shown: [String]) {
-        let before = names.count
-        names.subtract(shown)
-        if names.count != before { write() }
+        let before = contents.names.count
+        for name in shown { contents.names.removeValue(forKey: name) }
+        if contents.names.count != before { write() }
+    }
+
+    /// The put-away workspaces that are running now were seen under this daemon.
+    func noteRunning(_ running: Set<String>) {
+        guard let start = contents.daemonStart else { return }
+        var changed = false
+        for (name, seen) in contents.names where running.contains(name) && abs(seen - start) >= 0.001 {
+            contents.names[name] = start
+            changed = true
+        }
+        if changed { write() }
+    }
+
+    /// A new daemon: forget what did not run at all under the last one.
+    func validate(daemonStart: Date?) {
+        guard let start = daemonStart?.timeIntervalSince1970 else { return }
+        if let known = contents.daemonStart, abs(known - start) < 0.001 { return }
+        if let previous = contents.daemonStart {
+            contents.names = contents.names.filter { $0.value >= previous - 0.001 }
+        }
+        contents.daemonStart = start
+        write()
     }
 
     private func write() {
         try? FileManager.default.createDirectory(
             at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(names.sorted()).write(to: file, options: .atomic)
+        try? JSONEncoder().encode(contents).write(to: file, options: .atomic)
     }
 }
 
@@ -394,8 +437,13 @@ struct WindowRecord: Codable, Equatable {
     var y: Double
     var width: Double
     var height: Double
-    /// The workspaces this window carried, in its sidebar's order.
+    /// The workspaces this window carried, in its sidebar's order — with the
+    /// places of those the daemon lost and is getting back.
     var workspaces: [String]
+    /// The ones its sidebar was actually showing. For whoever checks from
+    /// outside that the tabs put back after a reboot are in sight; absent in
+    /// a file written by an earlier version.
+    var showing: [String]?
     var tab: TabID?
 }
 
@@ -438,8 +486,15 @@ final class WindowStateStore {
 
     /// Replace the lot. Windows that are gone are gone: this is called with
     /// everything that is open, so anything missing from it was closed.
+    ///
+    /// Written at least once under each daemon, even with nothing changed: a
+    /// reboot that brings back the same arrangement changes nothing here, and
+    /// whoever checks the windows after one can only trust a file written
+    /// since the daemon started.
     func save(_ newRecords: [Int: WindowRecord]) {
-        guard records != newRecords else { return }
+        let written = FileStamp(of: file).modified ?? .distantPast
+        let stale = written < (Daemon.startedAt ?? .distantPast)
+        guard records != newRecords || stale else { return }
         records = newRecords
         write()
     }

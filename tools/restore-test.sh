@@ -26,7 +26,7 @@
 #
 # Nothing is mocked: a daemon of its own on a scratch socket, KeepDev, real
 # shells. No mouse and no keys: what the window shows is read through the
-# accessibility tree (tools/axtext.swift). About two minutes.
+# accessibility tree (tools/axtext.swift). About three minutes.
 #
 # Your app and your daemon are never touched.
 
@@ -125,6 +125,18 @@ sidebar() {
         { head = $0; sub(/, .*/, "", head); if (head in known && !(head in seen)) { seen[head] = 1; out = out (out ? " " : "") head } }
         END { print out }'
 }
+# The same, for one window of several: the one whose left edge is at <x>.
+sidebar_in() {  # sidebar_in <x> <names>
+    "$AXTEXT" "$APP_NAME" 2>/dev/null | awk -v x="$1" '
+        /^=== window / { on = ($3 == x); next } on' | awk -v names="$2" '
+        BEGIN { n = split(names, list, " "); for (i = 1; i <= n; i++) known[list[i]] = 1 }
+        { head = $0; sub(/, .*/, "", head); if (head in known && !(head in seen)) { seen[head] = 1; out = out (out ? " " : "") head } }
+        END { print out }'
+}
+field() {  # field <key>: that key of window 0 in windows.json
+    python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["0"].get(sys.argv[2]) or []))' \
+        "$KEEP_STATE_DIR/windows.json" "$1" 2>/dev/null
+}
 # Which of two tab names the sidebar shows first.
 first_of() {  # first_of <a> <b>
     "$AXTEXT" "$APP_NAME" 2>/dev/null | awk -v a="$1" -v b="$2" '
@@ -175,6 +187,7 @@ start_app
 sleep 2
 check "what the window carried and has not come back yet is still written down" \
     "Delta Echo $HOME_WS" "$(carried)"
+check "apart from what its sidebar shows" "$HOME_WS" "$(field showing)"
 kill_app
 "$KEEP" new Echo >/dev/null 2>&1
 "$KEEP" new Delta >/dev/null 2>&1
@@ -260,6 +273,90 @@ kill_app
 start_app
 check "the arrangement survived the crash" "Bravo Kept Alpha Stray Charlie" "$(sidebar "$ALL")"
 check "and so did the names" "yes yes" "$(shows primeira) $(shows segunda)"
+
+# ------------------------------------------------------------ two windows
+say ""
+say "two windows, each with its own workspaces"
+kill_app
+start_daemon
+rm -f "$KEEP_STATE_DIR"/*.json
+"$KEEP" new One >/dev/null 2>&1
+"$KEEP" new Two >/dev/null 2>&1
+cat >"$KEEP_STATE_DIR/windows.json" <<'JSON'
+{"0":{"x":60,"y":200,"width":620,"height":520,"workspaces":["One"],"tab":{"workspace":"One","root":1}},
+ "1":{"x":720,"y":200,"width":620,"height":520,"workspaces":["Two"],"tab":{"workspace":"Two","root":1}}}
+JSON
+start_app
+check "each window shows only its own, relaunch after relaunch" "One | Two" \
+    "$(sidebar_in 60 "One Two") | $(sidebar_in 720 "One Two")"
+kill_app
+
+say ""
+say "a workspace that was in two windows comes back to both"
+start_daemon
+rm -f "$KEEP_STATE_DIR"/*.json
+cat >"$KEEP_STATE_DIR/windows.json" <<'JSON'
+{"0":{"x":60,"y":200,"width":620,"height":520,"workspaces":["Both","One"]},
+ "1":{"x":720,"y":200,"width":620,"height":520,"workspaces":["Both","Two"]}}
+JSON
+start_app
+"$KEEP" new Both >/dev/null 2>&1
+"$KEEP" new One >/dev/null 2>&1
+"$KEEP" new Two >/dev/null 2>&1
+wait_for "takes Two" 10
+sleep 1
+check "each window gets back what it had, and the shared one in both" \
+    "Both One $HOME_WS | Both Two $HOME_WS" \
+    "$(sidebar_in 60 "Both One Two $HOME_WS") | $(sidebar_in 720 "Both One Two $HOME_WS")"
+kill_app
+
+# --------------------------- nothing written down, and something put away
+say ""
+say "no window written down, as when the app was closed by its window's button"
+start_daemon
+rm -f "$KEEP_STATE_DIR"/*.json
+"$KEEP" new Kept >/dev/null 2>&1
+"$KEEP" new Hidden >/dev/null 2>&1
+"$KEEP" new quick >/dev/null 2>&1
+printf '["Hidden"]' >"$KEEP_STATE_DIR/put-away.json"
+start_app
+check "everything is shown except the put-away and the quick terminal's" "Kept" \
+    "$(sidebar "Kept Hidden quick")"
+check "and what was put away stays put away" "Hidden" \
+    "$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1]))["names"])))' \
+        "$KEEP_STATE_DIR/put-away.json" 2>/dev/null)"
+kill_app
+
+say ""
+say "a put-away workspace that did not run under the last daemon is forgotten"
+start_daemon
+rm -f "$KEEP_STATE_DIR"/*.json
+"$KEEP" new Recent >/dev/null 2>&1
+# Recent ran under the last daemon (started at 1000) and comes back put away;
+# Gone had not run since the one before, and a new Gone is a new workspace.
+printf '{"daemonStart":1000,"names":{"Recent":1000,"Gone":900}}' >"$KEEP_STATE_DIR/put-away.json"
+start_app
+"$KEEP" new Gone >/dev/null 2>&1
+wait_for "takes Gone," 10
+sleep 1
+check "the recent one stays away, the new one of an old name is shown" "Gone" "$(sidebar "Recent Gone")"
+kill_app
+
+# ------------------------------------------ the same arrangement after a reboot
+say ""
+say "a reboot that brings back the same arrangement"
+start_daemon
+rm -f "$KEEP_STATE_DIR"/*.json
+"$KEEP" new Solo >/dev/null 2>&1
+cat >"$KEEP_STATE_DIR/windows.json" <<'JSON'
+{"0":{"x":200,"y":200,"width":1000,"height":640,"workspaces":["Solo"],"showing":["Solo"],"tab":{"workspace":"Solo","root":1}}}
+JSON
+touch -t 202001010000 "$KEEP_STATE_DIR/windows.json"
+start_app
+sleep 2
+check "windows.json is written again under the new daemon, though nothing changed" "yes" \
+    "$(python3 -c 'import os,sys; print("yes" if os.stat(sys.argv[1]).st_mtime >= os.stat(sys.argv[2]).st_birthtime else "no")' \
+        "$KEEP_STATE_DIR/windows.json" "$SOCKET")"
 
 stop_app
 say ""

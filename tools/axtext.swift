@@ -3,7 +3,8 @@
 // One line per element that carries text — its value, title or description —
 // in the order the tree lists them, which for the sidebar is top to bottom:
 // a workspace's header, then its tabs. Menus are left out; only windows are
-// walked.
+// walked, each after a line "=== window <x>" giving its left edge in points,
+// so a test with two windows can tell whose sidebar is whose.
 //
 //   axtext <app name>
 //
@@ -47,5 +48,10 @@ func walk(_ element: AXUIElement, depth: Int) {
 
 let root = AXUIElementCreateApplication(app.processIdentifier)
 for window in attribute(root, "AXWindows") as? [AXUIElement] ?? [] {
+    var origin = CGPoint.zero
+    if let value = attribute(window, "AXPosition") {
+        AXValueGetValue(value as! AXValue, .cgPoint, &origin)
+    }
+    print("=== window \(Int(origin.x))")
     walk(window, depth: 0)
 }
