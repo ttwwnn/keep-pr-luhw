@@ -54,6 +54,48 @@ final class Session {
     private var lastSnapshots: [WindowID: SessionSnapshot] = [:]
     private var windowOrder: [WindowID] = []
 
+    /// What each window carries, in its order, together with the workspaces
+    /// it carried that are not running right now because the daemon holding
+    /// them went away — a reboot, a crash. Written down with the window (see
+    /// `placement`), so a workspace that comes back lands in the window, and
+    /// at the place in it, where it was, even if the app went down too while
+    /// the tabs were being put back.
+    private var remembered: [WindowID: [String]] = [:]
+    /// The workspaces somebody took out of sight — removed from the last
+    /// window showing them, or left behind by a window that closed — which
+    /// stay out of every sidebar, running and a ⌘P away, until somebody goes
+    /// to one. Every other running workspace is in some window: see
+    /// `placeOrphans`.
+    private let putAwayStore = PutAwayStore()
+    /// The daemon the stored tab names and tab order were last checked
+    /// against. Tab ids are the daemon's, and a daemon started afresh counts
+    /// from one again.
+    private var daemonStart: Date?
+    /// Moved on each time an intent changes the daemon and lists it again. A
+    /// poll that set out before that carries a listing from before it, and
+    /// applying it would put back what was just closed, or take away from a
+    /// window what was just made in it.
+    private(set) var generation = 0
+    /// Set when the app is quitting: the windows closing on the way out put
+    /// nothing away.
+    private var quitting = false
+    /// Told when what a window carries or shows has changed, so it can be
+    /// written down within a moment rather than only when a window closes or
+    /// the app quits — a crash or a power cut used to take the arrangement.
+    var onArrangementChange: (() -> Void)?
+    private var lastArrangement: [Arrangement] = []
+
+    private struct Arrangement: Equatable {
+        let window: WindowID
+        let workspaces: [String]
+        let tab: TabID?
+    }
+
+    /// The quick terminal's workspace. It is the panel's, not a window's:
+    /// the panel keeps it out of the windows so that its size and the tab it
+    /// shows are its own, and nothing here puts it in a sidebar.
+    static let quickWorkspace = "quick"
+
     /// Tabs in the order they were last entered, newest first. The daemon
     /// records no such thing — and it should not, since this is about where
     /// *you* have been, not about the work. Shared: where you have been is
@@ -74,19 +116,32 @@ final class Session {
     func addWindow(_ id: WindowID, renderer: SessionRendering, carrying: [String]) {
         renderers[id] = WeakRenderer(value: renderer)
         if views[id] == nil { views[id] = WindowView(workspaces: carrying) }
+        if !carrying.isEmpty { remembered[id] = carrying }
         if !windowOrder.contains(id) { windowOrder.append(id) }
         publish()
     }
 
-    /// What this window is carrying and showing, for whoever writes it down.
+    /// What this window is carrying and showing, for whoever writes it down —
+    /// with the workspaces it carried that are not running now, in their
+    /// places, so that a crash before they come back does not forget them.
     /// Read-only: `Session` remains the only writer of a `WindowView`.
     func placement(of id: WindowID) -> (workspaces: [String], tab: TabID?)? {
         guard let view = views[id] else { return nil }
-        return (view.workspaces, view.tab)
+        return (arrangement(of: id), view.tab)
     }
 
     func removeWindow(_ id: WindowID) {
+        // A window closed while others stay open leaves what only it carried
+        // put away, running and a ⌘P away — not pushed into another window.
+        // The last window closing is the app quitting, and puts nothing away.
+        if !quitting, windowOrder.count > 1, let view = views[id] {
+            let elsewhere = Set(views.filter { $0.key != id }.flatMap(\.value.workspaces))
+            for name in view.workspaces where !elsewhere.contains(name) {
+                putAwayStore.insert(name)
+            }
+        }
         views[id] = nil
+        remembered[id] = nil
         renderers[id] = nil
         lastSnapshots[id] = nil
         windowOrder.removeAll { $0 == id }
@@ -130,6 +185,11 @@ final class Session {
         sidebarStore.flush()
     }
 
+    /// The app is quitting: what closes from here on is not being put away.
+    func prepareToQuit() {
+        quitting = true
+    }
+
     /// Bring the app up. `carrying` is what the first window had last time,
     /// or nil on a first run — which is not the same as an empty list, and
     /// the difference is the whole point: a remembered empty window opens
@@ -143,13 +203,14 @@ final class Session {
         renderers[firstWindow] = WeakRenderer(value: renderer)
         if !windowOrder.contains(firstWindow) { windowOrder.append(firstWindow) }
         if views[firstWindow] == nil { views[firstWindow] = WindowView() }
+        if let carrying, !carrying.isEmpty { remembered[firstWindow] = carrying }
         do {
             try Daemon.ensureRunning()
         } catch {
             renderer.present(error: error.localizedDescription)
             return
         }
-        nameStore.validate(daemonStart: Daemon.startedAt)
+        checkDaemon()
         refreshFromDaemon()
 
         // Something must be on screen; a fresh daemon gets a default
@@ -166,6 +227,11 @@ final class Session {
         views[firstWindow]?.workspaces = carrying.map { remembered in
             remembered.filter(live.contains)
         } ?? live
+        // And whatever is running that no window carries and nobody put away:
+        // made while the app was not running — the tabs a reboot took, put
+        // back while it was down — or left out of a list written before this
+        // rule existed.
+        placeOrphans()
         // The tab it was left on, if that tab is still there. Chosen here
         // rather than switched to afterwards: a second activation would build
         // a surface, and a client, for a tab nobody asked to see.
@@ -184,10 +250,27 @@ final class Session {
     }
 
     /// One daemon poll, delivered by the poller. Reconciliation only: it can
-    /// prune and relabel, and repair a dead active tab — it cannot mount,
-    /// present, or switch to something new.
-    func reconcile(_ listing: [Daemon.Workspace]) {
+    /// prune and relabel, repair a dead active tab, and give a workspace that
+    /// arrived with no window a row in one — it cannot mount, present, or
+    /// switch to something new.
+    ///
+    /// `placing` is false when an intent re-lists after doing something: the
+    /// workspace it made is about to be put in the window that asked, and
+    /// taking it for another window first would show it in two.
+    func reconcile(_ listing: [Daemon.Workspace], placing: Bool = true, asOf: Int? = nil) {
+        // A poll that set out before an intent changed the daemon.
+        if let asOf, asOf != generation { return }
         var changed = false
+        // Somebody else may have named tabs — the script that puts tabs back
+        // after a reboot gives them the names they had before. Read before
+        // the daemon is checked: names written for a daemon that has just
+        // started must not be forgotten as the last one's.
+        if nameStore.reloadIfChanged(daemonStart: Daemon.startedAt ?? daemonStart) {
+            refreshOpenLists()
+            changed = true
+        }
+        let newDaemon = checkDaemon()
+        changed = changed || newDaemon
 
         // Workspaces gone from the daemon take their entities with them.
         let liveNames = Set(listing.map(\.name))
@@ -196,6 +279,12 @@ final class Session {
             SurfacePool.shared.discardAll(workspace: name)
             workspaces.removeAll { $0.name == name }
             changed = true
+        }
+        if !vanished.isEmpty, !newDaemon {
+            // Gone while the daemon stayed the same: somebody ended them.
+            // Nothing to keep a place for. Gone with the daemon, they are
+            // what a restore puts back, and keep their places meanwhile.
+            forget(vanished)
         }
 
         for daemon in listing {
@@ -252,6 +341,7 @@ final class Session {
                 changed = true
             }
         }
+        if placing, placeOrphans() { changed = true }
 
         if changed {
             let busy = workspaces.compactMap { space -> String? in
@@ -265,6 +355,97 @@ final class Session {
                     + (busy.isEmpty ? "" : " busy \(busy.joined(separator: ", "))"))
             publish()
         }
+    }
+
+    /// Give every running workspace that no window carries a row in one —
+    /// unless somebody put it out of sight, or it is the quick terminal's.
+    ///
+    /// This is what keeps a workspace from running where no sidebar shows it.
+    /// The first window carries what the daemon had when the app started and
+    /// a new one carries nothing, while the daemon grows workspaces the app
+    /// did not make: a login script putting back the tabs a reboot took, the
+    /// command-line client, anything made while the app was not running.
+    /// Each lands in the window that carried it before, at its place there,
+    /// or at the end of the first window, which is where something with
+    /// nowhere else to go lands.
+    ///
+    /// Not while an intent re-lists (`placing`): the workspace an intent made
+    /// is about to be put in the window that asked, and taking it for another
+    /// first would show it in two.
+    @discardableResult
+    private func placeOrphans() -> Bool {
+        var carried = Set(views.values.flatMap(\.workspaces))
+        var placed = false
+        for workspace in workspaces where !workspace.tabs.isEmpty {
+            let name = workspace.name
+            guard !carried.contains(name), name != Self.quickWorkspace,
+                  !putAwayStore.contains(name), let window = home(for: name)
+            else { continue }
+            let list = views[window]?.workspaces ?? []
+            views[window]?.workspaces = Self.inserting(name, into: list, by: remembered[window])
+            carried.insert(name)
+            Trace.log("window", "\(window) takes \(name), which was in no window")
+            placed = true
+        }
+        return placed
+    }
+
+    /// What a window carries, with what it carried and does not show right
+    /// now put back where it was: workspaces the daemon lost and is getting
+    /// back, and ones running that no window has taken yet. What went to
+    /// another window, was put away or was ended leaves the list.
+    private func arrangement(of id: WindowID) -> [String] {
+        var list = views[id]?.workspaces ?? []
+        let elsewhere = Set(views.filter { $0.key != id }.flatMap(\.value.workspaces))
+        for name in remembered[id] ?? []
+        where !list.contains(name) && !elsewhere.contains(name)
+            && !putAwayStore.contains(name) && name != Self.quickWorkspace {
+            list = Self.inserting(name, into: list, by: remembered[id])
+        }
+        return list
+    }
+
+    /// Workspaces somebody ended: no window keeps a place for them, and none
+    /// is put away — one made later under the same name is a new one.
+    private func forget(_ names: [String]) {
+        for id in Array(remembered.keys) {
+            remembered[id]?.removeAll { names.contains($0) }
+        }
+        for name in names { putAwayStore.remove(name) }
+    }
+
+    /// The open window that carried `name` last time, or the first open one.
+    private func home(for name: String) -> WindowID? {
+        let open = windowOrder.filter { views[$0] != nil }
+        return open.first { remembered[$0]?.contains(name) == true } ?? open.first
+    }
+
+    /// `name` put into `list` where `order` had it — just after the last
+    /// workspace `order` put before it that the list holds, or first if the
+    /// list holds none of those — and at the end when `order` never had it.
+    static func inserting(_ name: String, into list: [String], by order: [String]?) -> [String] {
+        var list = list
+        guard let order, let rank = order.firstIndex(of: name) else {
+            list.append(name)
+            return list
+        }
+        let before = Set(order[..<rank])
+        let at = list.lastIndex(where: { before.contains($0) }).map { $0 + 1 } ?? 0
+        list.insert(name, at: at)
+        return list
+    }
+
+    /// Check the stored tab names and tab order against the daemon that is
+    /// running, and forget them if they were kept for another. True if the
+    /// daemon is not the one they were last checked against.
+    @discardableResult
+    private func checkDaemon() -> Bool {
+        guard let start = Daemon.startedAt else { return false }
+        if let known = daemonStart, abs(known.timeIntervalSince(start)) < 0.001 { return false }
+        daemonStart = start
+        nameStore.validate(daemonStart: start)
+        tabOrderStore.validate(daemonStart: start)
+        return true
     }
 
     // MARK: - intents
@@ -380,6 +561,12 @@ final class Session {
         case .removeWorkspace(let name):
             guard var view = views[window], view.workspaces.contains(name) else { return }
             view.workspaces.removeAll { $0 == name }
+            // Out of the last window showing it: put away, so that it stays out
+            // of sight — across a relaunch and a reboot too — until somebody
+            // goes to it.
+            if !views.contains(where: { $0.key != window && $0.value.workspaces.contains(name) }) {
+                putAwayStore.insert(name)
+            }
             // Standing in the one being put away: step to a neighbour rather
             // than leaving the window pointed at something it no longer lists.
             if view.workspace == name {
@@ -829,6 +1016,7 @@ final class Session {
         } catch {
             renderer(window)?.present(error: error.localizedDescription)
         }
+        forget([name])
         SurfacePool.shared.discardAll(workspace: name)
         refreshFromDaemon()
         if workspace(for: window) == nil || workspace(for: window)?.tabs.isEmpty == true {
@@ -1328,8 +1516,9 @@ final class Session {
 
     /// Re-list and reconcile after any mutation the daemon took part in.
     private func refreshFromDaemon() {
+        generation += 1
         guard let listing = try? Daemon.list() else { return }
-        reconcile(listing)
+        reconcile(listing, placing: false)
     }
 
     /// Every window is offered a snapshot; only the ones whose own has
@@ -1348,6 +1537,19 @@ final class Session {
             guard snapshot != lastSnapshots[id] else { continue }
             lastSnapshots[id] = snapshot
             renderer.render(snapshot)
+        }
+        // What each window carries, kept with the places of what is not
+        // running now; and nothing a window carries counts as put away.
+        for id in windowOrder where views[id] != nil {
+            remembered[id] = arrangement(of: id)
+        }
+        putAwayStore.remove(views.values.flatMap(\.workspaces))
+        let arrangement = windowOrder.map { id in
+            Arrangement(window: id, workspaces: remembered[id] ?? [], tab: views[id]?.tab)
+        }
+        if arrangement != lastArrangement {
+            lastArrangement = arrangement
+            onArrangementChange?()
         }
     }
 

@@ -94,33 +94,67 @@ final class SidebarStateStore {
     }
 }
 
-/// The order the workspaces are listed in.
+/// The order the tabs of each workspace are listed in.
 ///
 /// App-side, like the sidebar's own state, because this is a preference about
 /// looking rather than a fact about what is running: the daemon knows which
 /// numbers — so this remembers ids, and ids are only meaningful while the
-/// daemon that issued them is alive. A daemon restarted hands out fresh ones
-/// and the remembered order quietly stops applying, which is the right way
-/// for it to fail.
+/// daemon that issued them is alive. A daemon started afresh counts from one
+/// again, so an order kept for the last one would sort unrelated tabs — after
+/// a reboot, the tabs put back in their old order came up shuffled by it. The
+/// daemon's start is kept beside the order, as `NameStore` keeps it beside the
+/// names, and a different start forgets it.
 @MainActor
 final class TabOrderStore {
     private(set) var order: [String: [UInt32]]
+    /// When the daemon these ids belong to started, in seconds.
+    private var daemonStart: Double?
+    /// When a file in the earlier format, which names no daemon, was written.
+    private var legacyWritten: Date?
     private let file: URL
+
+    private struct Contents: Codable {
+        var daemonStart: Double?
+        var order: [String: [UInt32]]
+    }
 
     init(directory: URL? = nil) {
         let dir = directory ?? stateDirectory()
         file = dir.appendingPathComponent("tab-order.json")
-        order = (try? JSONDecoder().decode(
-            [String: [UInt32]].self, from: Data(contentsOf: file)
-        )) ?? [:]
+        let data = (try? Data(contentsOf: file)) ?? Data()
+        if let contents = try? JSONDecoder().decode(Contents.self, from: data) {
+            order = contents.order
+            daemonStart = contents.daemonStart
+        } else if let bare = try? JSONDecoder().decode([String: [UInt32]].self, from: data) {
+            // What earlier versions wrote, with no daemon beside it: whose ids
+            // they are is told by when it was written — see `validate`.
+            order = bare
+            legacyWritten = FileStamp(of: file).modified
+        } else {
+            order = [:]
+        }
+    }
+
+    /// Forget the order if it was kept under another daemon.
+    func validate(daemonStart: Date?) {
+        guard let start = daemonStart?.timeIntervalSince1970 else { return }
+        if let known = self.daemonStart, abs(known - start) < 0.001 { return }
+        if self.daemonStart != nil {
+            order = [:]
+        } else if let written = legacyWritten, written.timeIntervalSince1970 < start - 0.001 {
+            // An order in the earlier format, written before this daemon was
+            // started: another daemon's ids.
+            order = [:]
+        }
+        legacyWritten = nil
+        self.daemonStart = start
+        write()
     }
 
     func save(_ tabs: [UInt32], in workspace: String) {
         guard order[workspace] != tabs else { return }
         order[workspace] = tabs
-        try? FileManager.default.createDirectory(
-            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(order).write(to: file, options: .atomic)
+        write()
     }
 
     /// Sort ids into the remembered order, with anything unheard-of kept where
@@ -131,6 +165,77 @@ final class TabOrderStore {
         let placed = remembered.filter(ids.contains)
         let rest = ids.filter { !remembered.contains($0) }
         return placed + rest
+    }
+
+    private func write() {
+        try? FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? JSONEncoder().encode(Contents(daemonStart: daemonStart, order: order))
+            .write(to: file, options: .atomic)
+    }
+}
+
+/// A file as it was when last looked at, to notice that somebody else wrote it.
+///
+/// The inode as well as the date and the size: whoever writes it atomically
+/// replaces the file, and two writes inside one tick of the clock with the
+/// same length would otherwise look like none.
+struct FileStamp: Equatable {
+    let inode: UInt64?
+    let modified: Date?
+    let size: UInt64?
+
+    init(of url: URL) {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        inode = (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value
+        modified = attributes?[.modificationDate] as? Date
+        size = (attributes?[.size] as? NSNumber)?.uint64Value
+    }
+}
+
+/// The workspaces somebody took out of sight.
+///
+/// Removed from the last window that showed them, or left behind by a window
+/// that closed: running, a ⌘P away, and in no sidebar — which is how they were
+/// left, and how they stay across a relaunch and across a reboot, when the
+/// tabs in them are put back. Every other running workspace is shown
+/// somewhere. Kept by name, which outlives a daemon.
+@MainActor
+final class PutAwayStore {
+    private var names: Set<String>
+    private let file: URL
+
+    init(directory: URL? = nil) {
+        let dir = directory ?? stateDirectory()
+        file = dir.appendingPathComponent("put-away.json")
+        names = Set((try? JSONDecoder().decode(
+            [String].self, from: Data(contentsOf: file)
+        )) ?? [])
+    }
+
+    func contains(_ name: String) -> Bool { names.contains(name) }
+
+    func insert(_ name: String) {
+        guard names.insert(name).inserted else { return }
+        write()
+    }
+
+    func remove(_ name: String) {
+        guard names.remove(name) != nil else { return }
+        write()
+    }
+
+    /// Nothing a window carries is put away.
+    func remove(_ shown: [String]) {
+        let before = names.count
+        names.subtract(shown)
+        if names.count != before { write() }
+    }
+
+    private func write() {
+        try? FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? JSONEncoder().encode(names.sorted()).write(to: file, options: .atomic)
     }
 }
 
@@ -148,7 +253,7 @@ final class TabOrderStore {
 /// the workspace's own name, which outlives a daemon, and stay.
 @MainActor
 final class NameStore {
-    private struct Contents: Codable {
+    private struct Contents: Codable, Equatable {
         /// When the daemon these tab ids belong to started, in seconds.
         var daemonStart: Double?
         /// "workspace␟root" → name.
@@ -169,12 +274,44 @@ final class NameStore {
 
     private var contents: Contents
     private let file: URL
+    /// The file as this store last read or wrote it.
+    private var stamp: FileStamp
 
     init(directory: URL? = nil) {
         let dir = directory ?? stateDirectory()
         file = dir.appendingPathComponent("names.json")
+        stamp = FileStamp(of: file)
         contents = (try? JSONDecoder().decode(Contents.self, from: Data(contentsOf: file)))
             ?? Contents()
+    }
+
+    /// Read the file again if somebody else wrote it since. True if a name
+    /// changed.
+    ///
+    /// Somebody else is the script that puts tabs back after a reboot: it can
+    /// give them the names they had before only here, and only after this
+    /// app has started the daemon those tabs live in.
+    ///
+    /// A file written for another daemon is refused whole, and what this app
+    /// holds is written back over it: its ids are not this daemon's tabs, and
+    /// taking it — then forgetting it, as launch forgets names kept for
+    /// another daemon — would lose every name given here.
+    func reloadIfChanged(daemonStart: Date?) -> Bool {
+        let now = FileStamp(of: file)
+        guard now != stamp else { return false }
+        stamp = now
+        guard let data = try? Data(contentsOf: file),
+              let fresh = try? JSONDecoder().decode(Contents.self, from: data)
+        else { return false }
+        if let theirs = fresh.daemonStart, let start = daemonStart?.timeIntervalSince1970,
+           abs(theirs - start) >= 0.001 {
+            write()
+            return false
+        }
+        let before = contents
+        contents = fresh
+        validate(daemonStart: daemonStart)
+        return contents != before
     }
 
     private static func key(_ id: TabID) -> String { "\(id.workspace)\u{1F}\(id.root)" }
@@ -185,7 +322,9 @@ final class NameStore {
     /// Forget the tab names if they were given under another daemon.
     func validate(daemonStart: Date?) {
         guard let start = daemonStart?.timeIntervalSince1970 else { return }
-        guard contents.daemonStart != start else { return }
+        // Within a millisecond rather than to the bit: another program writing
+        // this file reads the same start off the socket, through other code.
+        if let known = contents.daemonStart, abs(known - start) < 0.001 { return }
         if contents.daemonStart != nil { contents.tabs = [:] }
         contents.daemonStart = start
         write()
@@ -196,13 +335,13 @@ final class NameStore {
         let key = Self.key(id)
         guard contents.tabs[key] != name else { return }
         contents.tabs[key] = name
-        write()
+        write(touching: [key])
     }
 
     func setWorkspace(_ workspace: String, to name: String?) {
         guard contents.workspaces[workspace] != name else { return }
         contents.workspaces[workspace] = name
-        write()
+        write(touchingWorkspace: workspace)
     }
 
     /// A tab's id changed under it — moved to another workspace, or its root
@@ -210,13 +349,36 @@ final class NameStore {
     func moveTab(from old: TabID, to new: TabID) {
         guard old != new, let name = contents.tabs.removeValue(forKey: Self.key(old)) else { return }
         contents.tabs[Self.key(new)] = name
-        write()
+        write(touching: [Self.key(old), Self.key(new)])
     }
 
-    private func write() {
+    /// `touching`: the names this write changes, which win over the file's.
+    private func write(touching: Set<String> = [], touchingWorkspace: String? = nil) {
+        absorb(except: touching, workspace: touchingWorkspace)
         try? FileManager.default.createDirectory(
             at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? JSONEncoder().encode(contents).write(to: file, options: .atomic)
+        stamp = FileStamp(of: file)
+    }
+
+    /// Names somebody else added to the file since this store last read or
+    /// wrote it — the script that names the tabs it put back, in the two
+    /// seconds before the next poll reads it — taken in before writing over
+    /// them. Additions only, and only when the file is this daemon's: a name
+    /// this store holds, or is changing now, is the one that stands.
+    private func absorb(except touching: Set<String>, workspace: String?) {
+        guard FileStamp(of: file) != stamp,
+              let data = try? Data(contentsOf: file),
+              let theirs = try? JSONDecoder().decode(Contents.self, from: data),
+              let mine = contents.daemonStart, let their = theirs.daemonStart,
+              abs(mine - their) < 0.001
+        else { return }
+        for (key, name) in theirs.tabs where contents.tabs[key] == nil && !touching.contains(key) {
+            contents.tabs[key] = name
+        }
+        for (key, name) in theirs.workspaces where contents.workspaces[key] == nil && key != workspace {
+            contents.workspaces[key] = name
+        }
     }
 }
 
@@ -245,11 +407,12 @@ struct WindowRecord: Codable, Equatable {
 /// decide, in one turn of the run loop, rather than AppKit's to reopen at
 /// whatever moment suits it.
 ///
-/// Written when a window closes and when the app is asked to quit, rather
-/// than continuously: those are the two moments the set of windows actually
-/// changes, and reading the frames live at each of them is simpler than
-/// keeping a copy in step with every drag. A crash loses the arrangement,
-/// which is the honest trade — nothing here is work, only furniture.
+/// Written when a window closes, when the app is asked to quit, and a moment
+/// after what a window carries or shows changes — not on every drag. Only at
+/// the first two, once, and a crash or a power cut lost the arrangement; after
+/// a reboot that meant workspaces put back by a script landed in no window's
+/// list and out of sight. The frames are still read live whenever it is
+/// written, so there is no second copy to keep in step.
 @MainActor
 final class WindowStateStore {
     private(set) var records: [Int: WindowRecord]

@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// thing written down before the app died was "no windows were open",
     /// and it came back with one, every time.
     private var quitting = false
+    /// A write of the windows is owed: what one carries or shows changed.
+    private var rememberPending = false
     private var keyMonitor: Any?
 
     /// ⌘W and ⌘Z do nothing here, with any other modifier held as well.
@@ -112,6 +114,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Trace.log("window", "remembered \(records.count)")
         windowStore.save(records)
+    }
+
+    /// Write the windows down a moment from now, once for a burst of changes.
+    ///
+    /// A second rather than at once: a restore after a reboot adds workspaces
+    /// one poll at a time, and the frames read at the end are as good as any.
+    private func rememberSoon() {
+        guard !rememberPending else { return }
+        rememberPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            self.rememberPending = false
+            self.rememberWindows()
+        }
     }
 
     /// A tab pulled out of a row and let go.
@@ -214,6 +230,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
         swallowUnwantedKeys()
 
+        // What a window carries is written down as it changes, not only at
+        // quit: see `WindowStateStore`.
+        session.onArrangementChange = { [weak self] in self?.rememberSoon() }
+
         // Every window this run will have, made here, in one turn of the run
         // loop. A tiling window manager reacts to each window that appears;
         // making them all now costs it one re-tile at launch instead of a
@@ -268,6 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         rememberWindows()
         quitting = true
+        session.prepareToQuit()
         return .terminateNow
     }
 

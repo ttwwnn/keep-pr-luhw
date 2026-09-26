@@ -24,12 +24,14 @@ final class DaemonPoller {
     private func poll() {
         guard !inFlight else { return }
         inFlight = true
+        // Which listing this is: one an intent has overtaken is dropped.
+        let generation = session.generation
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let listing = try? Daemon.list()
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.inFlight = false
-                if let listing { self.session.reconcile(listing) }
+                if let listing { self.session.reconcile(listing, asOf: generation) }
             }
         }
     }

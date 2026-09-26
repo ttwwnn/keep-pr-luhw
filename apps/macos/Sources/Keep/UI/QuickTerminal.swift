@@ -53,7 +53,7 @@ final class QuickTerminal: NSObject, NSWindowDelegate {
     /// The workspace the panel shows. Its own, so its size vote and its tab
     /// never tangle with anything a window is showing — and still a real
     /// workspace: `keep quick` from any terminal reaches the same shell.
-    private static let workspace = "quick"
+    private static let workspace = Session.quickWorkspace
 
     // MARK: - the hotkey
 
