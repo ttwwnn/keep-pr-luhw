@@ -211,7 +211,8 @@ enum ClaudeMode: Hashable {
 enum ClaudeActivity: Hashable {
     /// A turn is running: the mode's colour, as before.
     case working
-    /// The turn ended waiting on dynamic workflows still running.
+    /// The turn ended with work still running behind it: dynamic workflows,
+    /// background agents or shells.
     case waitingForWorkflow
     /// A question, a permission or a dialog is waiting on an answer.
     case waitingForYou
@@ -265,6 +266,11 @@ enum ClaudeActivity: Hashable {
         // Under the box: Claude Code offers the interrupt only while a turn
         // runs, and the box stays put however the conversation scrolls.
         if footer.contains(where: { $0.lowercased().contains("esc to interrupt") }) { return .working }
+        // Shells still running in the background (`· 2 shells ·` under the
+        // box, counted live): the turn is over but Claude Code will be back
+        // when they end, as with a workflow. The `… · 2 shells still running`
+        // on the turn's last line is not read — it stays after they end.
+        if footer.contains(where: isRunningShells) { return .waitingForWorkflow }
         // Above it, the conversation — unless it is scrolled back, where the
         // last status line in sight is an old one.
         let conversation = lines[..<opening]
@@ -285,6 +291,15 @@ enum ClaudeActivity: Hashable {
         }
         if status.contains("…") { return .working }
         return .done
+    }
+
+    /// `2 shells`, one of the `·`-separated parts of the footer.
+    private static func isRunningShells(_ line: Substring) -> Bool {
+        line.split(separator: "·").contains { part in
+            let words = part.split(separator: " ")
+            return words.count == 2 && words[0].allSatisfy(\.isNumber)
+                && (words[1] == "shell" || words[1] == "shells")
+        }
     }
 
     /// `❯ 1. Yes`: the pointer of one of Claude Code's numbered choices.
