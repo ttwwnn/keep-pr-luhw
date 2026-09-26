@@ -199,6 +199,115 @@ enum ClaudeMode: Hashable {
     }
 }
 
+/// Where Claude Code's turn stands, read off the same screen as the mode.
+///
+/// Claude Code says it in its own words and nowhere else a tab can reach:
+/// a dialog waiting on an answer ends in `Esc to cancel`; a turn still going
+/// shows `esc to interrupt` under the prompt; a turn that ended while
+/// dynamic workflows run on leaves `✻ Waiting for 1 dynamic workflow to
+/// finish` as its last line; any other last line (`✻ Baked for 23s`) is a
+/// turn that is over. The title's spinner cannot tell these apart: it keeps
+/// spinning while a workflow is awaited.
+enum ClaudeActivity: Hashable {
+    /// A turn is running: the mode's colour, as before.
+    case working
+    /// The turn ended waiting on dynamic workflows still running.
+    case waitingForWorkflow
+    /// A question, a permission or a dialog is waiting on an answer.
+    case waitingForYou
+    /// The turn is over.
+    case done
+
+    /// What the screen says, or nil when it says nothing that can be told
+    /// apart — not Claude Code, or caught mid-redraw — leaving what was known
+    /// before standing.
+    static func read(onScreen text: String) -> ClaudeActivity? {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        func isRule(_ line: Substring) -> Bool {
+            line.trimmingCharacters(in: .whitespaces)
+                .hasPrefix(String(repeating: "─", count: 12))
+        }
+        func trimmed(_ line: Substring) -> String { line.trimmingCharacters(in: .whitespaces) }
+        func isPrompt(_ line: Substring) -> Bool {
+            let t = trimmed(line)
+            return t.hasPrefix("❯") || t.hasPrefix(">")
+        }
+        // A dialog first: Claude Code ends most it draws (a question, a
+        // permission, trusting a folder, a picker) with `Esc to cancel`.
+        // Checked before the box, because a permission shows the prompt that
+        // asked for it (`❯ Crie o arquivo…`) between two rules of its own.
+        let tail = lines.reversed().lazy
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .prefix(4)
+        if tail.contains(where: { $0.contains("Esc to cancel") }) { return .waitingForYou }
+        // The prompt box, found the way the mode is: a rule, the prompt, a
+        // rule.
+        guard let rule = lines.lastIndex(where: isRule),
+              let opening = lines[..<rule].lastIndex(where: isRule),
+              let first = lines[(opening + 1)..<rule].first(where: { !trimmed($0).isEmpty }),
+              isPrompt(first)
+        else {
+            // No box: the plan's approval draws its choices without the
+            // `Esc to cancel` line — the pointer on a numbered choice
+            // (`❯ 1. Yes, auto-accept edits`) is what is left to go by.
+            if lines.contains(where: isChoicePointer) { return .waitingForYou }
+            return nil
+        }
+        let footer = lines[(rule + 1)...]
+        // A view that is not the session's own turn: an agent's conversation
+        // (`❯ Message @general-purpose…`, `stop all agents`) or the detailed
+        // transcript. What it shows says nothing of the main turn.
+        if trimmed(first).hasPrefix("❯ Message @")
+            || footer.contains(where: { $0.contains("stop all agents") || $0.contains("Showing detailed transcript") })
+        {
+            return nil
+        }
+        // Under the box: Claude Code offers the interrupt only while a turn
+        // runs, and the box stays put however the conversation scrolls.
+        if footer.contains(where: { $0.lowercased().contains("esc to interrupt") }) { return .working }
+        // Above it, the conversation — unless it is scrolled back, where the
+        // last status line in sight is an old one.
+        let conversation = lines[..<opening]
+        if conversation.contains(where: { $0.contains("Jump to bottom") || $0.contains(" new message") }) {
+            return nil
+        }
+        // The last status line Claude Code wrote: a glyph of its spinner and
+        // a capitalised word, `✻ Baked for 23s`, `✶ Roosting… (16m)`. A bullet
+        // in the conversation (`· Qual…` under an answer) is indented under
+        // `⎿` or starts lower-case.
+        guard let status = conversation.last(where: isStatusLine) else { return .done }
+        if status.contains("Waiting for"), status.contains("to finish") {
+            // Dynamic workflows or background agents. Still waited on only
+            // while one is listed running under the footer (`◯ name ▰▰ 1/2`);
+            // a turn that went on and was interrupted writes no new line, and
+            // the old one would otherwise stand for good.
+            return footer.contains(where: { trimmed($0).hasPrefix("◯") }) ? .waitingForWorkflow : .done
+        }
+        if status.contains("…") { return .working }
+        return .done
+    }
+
+    /// `❯ 1. Yes`: the pointer of one of Claude Code's numbered choices.
+    private static func isChoicePointer(_ line: Substring) -> Bool {
+        var rest = line.drop { $0 == " " }
+        guard rest.first == "❯" else { return false }
+        rest = rest.dropFirst().drop { $0 == " " }
+        let digits = rest.prefix { $0.isNumber }
+        return !digits.isEmpty && rest.dropFirst(digits.count).first == "."
+    }
+
+    private static let spinnerGlyphs: Set<Character> = ["✻", "✳", "✢", "✶", "✽", "·", "*"]
+
+    private static func isStatusLine(_ line: Substring) -> Bool {
+        var rest = line.drop { $0 == " " }
+        guard let glyph = rest.first, spinnerGlyphs.contains(glyph) else { return false }
+        rest = rest.dropFirst()
+        guard rest.first == " " else { return false }
+        rest = rest.drop { $0 == " " }
+        return rest.first?.isUppercase == true
+    }
+}
+
 /// The one downward channel. Every mutation in the app enters as one of
 /// these; nothing in the UI reaches past this into state.
 enum Intent {
@@ -598,6 +707,8 @@ struct SessionSnapshot: Hashable {
         /// Claude Code's permission mode, when Claude Code is what runs here
         /// and it is in one worth a colour.
         let claudeMode: ClaudeMode?
+        /// Where Claude Code's turn stands there, when it can be told.
+        let claudeActivity: ClaudeActivity?
     }
 
     struct StripItem: Hashable, Identifiable {
@@ -613,6 +724,7 @@ struct SessionSnapshot: Hashable {
         let isElsewhere: Bool
         /// As on the sidebar's row.
         let claudeMode: ClaudeMode?
+        let claudeActivity: ClaudeActivity?
     }
 
     struct ActiveTab: Hashable {

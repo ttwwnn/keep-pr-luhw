@@ -624,6 +624,7 @@ struct WorkspaceSidebar: View {
     private func titleInk(for tab: SessionSnapshot.SidebarTab, chosen: Bool, hovered: Bool)
         -> Color
     {
+        if let activity = tab.claudeActivity?.dynamicColor { return Color(nsColor: activity) }
         if let mode = tab.claudeMode { return Color(nsColor: mode.dynamicColor) }
         return chosen ? Palette.ink : hovered ? Palette.inkResting : Palette.inkFaint
     }

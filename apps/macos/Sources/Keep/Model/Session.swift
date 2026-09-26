@@ -43,6 +43,9 @@ final class Session {
     /// Claude Code's permission mode in each tab that runs it, as last read
     /// off its screen. Absent: manual, not Claude Code, or not read yet.
     private var claudeModes: [TabID: ClaudeMode] = [:]
+    /// Where Claude Code's turn stands in each tab that runs it, as last read
+    /// off its screen. Absent: not Claude Code, or not read yet.
+    private var claudeActivities: [TabID: ClaudeActivity] = [:]
 
     /// What each window is pointed at, and who to hand its snapshot to.
     ///
@@ -676,6 +679,7 @@ final class Session {
             // And so does the name somebody gave it.
             nameStore.moveTab(from: id, to: TabID(workspace: to, root: newRoot))
             claudeModes[TabID(workspace: to, root: newRoot)] = claudeModes.removeValue(forKey: id)
+            claudeActivities[TabID(workspace: to, root: newRoot)] = claudeActivities.removeValue(forKey: id)
             refreshFromDaemon()
             // Land where it was dropped, not where the daemon appended it.
             if let target = workspaces.first(where: { $0.name == to }) {
@@ -1352,14 +1356,18 @@ final class Session {
     /// What the screens said. `.some(nil)` is a footer naming no mode —
     /// manual — and clears the colour; a tab missing from `modes` could not
     /// be read this time, and keeps what it had.
-    func noteClaudeModes(_ modes: [TabID: ClaudeMode?]) {
+    func noteClaudeModes(_ modes: [TabID: ClaudeMode?], activities: [TabID: ClaudeActivity] = [:]) {
         var next = claudeModes
         for (id, mode) in modes { next[id] = mode }
+        var nextActivities = claudeActivities
+        for (id, activity) in activities { nextActivities[id] = activity }
         // Tabs that are gone, or have stopped running Claude Code, lose it.
         let running = Set(claudeTabs())
         next = next.filter { running.contains($0.key) }
-        guard next != claudeModes else { return }
+        nextActivities = nextActivities.filter { running.contains($0.key) }
+        guard next != claudeModes || nextActivities != claudeActivities else { return }
         claudeModes = next
+        claudeActivities = nextActivities
         publish()
     }
 
@@ -1579,7 +1587,8 @@ final class Session {
                         isElsewhere: views.contains {
                             $0.key != window && $0.value.tab == tab.id
                         },
-                        claudeMode: claudeModes[tab.id]
+                        claudeMode: claudeModes[tab.id],
+                        claudeActivity: claudeActivities[tab.id]
                     )
                 },
                 expanded: !sidebar.folded.contains(workspace.name)
@@ -1593,7 +1602,8 @@ final class Session {
                 hasPanes: !tab.panes.isEmpty,
                 isActive: tab.id == view.tab,
                 isElsewhere: views.contains { $0.key != window && $0.value.tab == tab.id },
-                claudeMode: claudeModes[tab.id]
+                claudeMode: claudeModes[tab.id],
+                claudeActivity: claudeActivities[tab.id]
             )
         }
         let active = shownTab(in: window).map { tab in

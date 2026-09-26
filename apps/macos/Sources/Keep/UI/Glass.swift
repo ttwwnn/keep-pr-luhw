@@ -228,6 +228,36 @@ final class AdaptiveLozengeView: NSView {
     }
 }
 
+// MARK: - Where Claude Code's turn stands
+
+extension ClaudeActivity {
+    /// Blue while dynamic workflows are awaited, green while a question or a
+    /// permission waits on you, grey once the turn is over. A turn still
+    /// running has none: the mode's colour, as before.
+    func color(dark: Bool) -> NSColor? {
+        let rgb: (CGFloat, CGFloat, CGFloat)
+        switch (self, dark) {
+        case (.working, _): return nil
+        case (.waitingForWorkflow, true): rgb = (100, 170, 255)
+        case (.waitingForWorkflow, false): rgb = (0, 92, 197)
+        case (.waitingForYou, true): rgb = (80, 200, 120)
+        case (.waitingForYou, false): rgb = (0, 128, 56)
+        case (.done, true): rgb = (150, 150, 150)
+        case (.done, false): rgb = (118, 118, 118)
+        }
+        return NSColor(srgbRed: rgb.0 / 255, green: rgb.1 / 255, blue: rgb.2 / 255, alpha: 1)
+    }
+
+    /// Resolved against the appearance it is drawn in; nil where the turn has
+    /// no colour of its own.
+    var dynamicColor: NSColor? {
+        guard self != .working else { return nil }
+        return NSColor(name: nil) { appearance in
+            color(dark: appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua) ?? .labelColor
+        }
+    }
+}
+
 // MARK: - Claude Code's mode colours
 
 extension ClaudeMode {

@@ -1095,7 +1095,10 @@ final class TabCellView: NSView {
         // colour, the one its footer is written in, so a tab left in bypass
         // reads as one from across the row. Only the colour: the weight and
         // the capsule still say which tab you are in.
-        label.textColor = item.claudeMode?.color(dark: palette.dark) ?? ink
+        // Where the turn stands wins over the mode when it has a colour of
+        // its own: waiting on a workflow, waiting on you, or over.
+        label.textColor = item.claudeActivity?.color(dark: palette.dark)
+            ?? item.claudeMode?.color(dark: palette.dark) ?? ink
         hoverFill.layer?.backgroundColor = palette.hoverFill.cgColor
         offer(offering)
 

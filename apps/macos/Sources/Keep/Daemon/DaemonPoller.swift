@@ -75,16 +75,19 @@ final class ClaudeModeWatcher {
         inFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var modes: [TabID: ClaudeMode?] = [:]
+            var activities: [TabID: ClaudeActivity] = [:]
             for id in tabs {
-                guard let screen = try? Daemon.preview(workspace: id.workspace, tab: id.root),
-                      let declared = ClaudeMode.declared(onScreen: screen)
+                guard let screen = try? Daemon.preview(workspace: id.workspace, tab: id.root)
                 else { continue }
-                modes[id] = declared
+                if let declared = ClaudeMode.declared(onScreen: screen) { modes[id] = declared }
+                // A dialog in front hides the mode but is itself the answer
+                // to where the turn stands.
+                if let activity = ClaudeActivity.read(onScreen: screen) { activities[id] = activity }
             }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.inFlight = false
-                self.session.noteClaudeModes(modes)
+                self.session.noteClaudeModes(modes, activities: activities)
             }
         }
     }
