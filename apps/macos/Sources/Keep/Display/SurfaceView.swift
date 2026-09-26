@@ -83,6 +83,7 @@ final class TerminalSurfaceView: NSView {
         // Without this the view keeps its own backing store and libghostty
         // draws into something the window never composites.
         layerContentsRedrawPolicy = .duringViewResize
+        registerForDraggedTypes(DroppedFiles.types)
     }
 
     @available(*, unavailable)
@@ -1276,6 +1277,83 @@ final class TerminalSurfaceView: NSView {
         perform("paste_from_clipboard")
     }
     @objc override func selectAll(_ sender: Any?) { perform("select_all") }
+
+    // MARK: - files dropped on the terminal
+
+    /// A drag of files over this pane is offered a copy; anything else — the
+    /// sidebar's own rows, text, a link — is refused, so letting go of it
+    /// here types nothing. See `DroppedFiles`.
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        DroppedFiles.canTake(sender.draggingPasteboard) ? .copy : []
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        DroppedFiles.canTake(sender.draggingPasteboard) ? .copy : []
+    }
+
+    /// Type the paths of the files let go here, into this pane — the one under
+    /// the pointer, which need not be the one with the keyboard.
+    ///
+    /// Files that exist are typed at once. Files an app only promises are
+    /// written first, each to a folder of its own under the temporary
+    /// directory, and typed as they arrive.
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let pasteboard = sender.draggingPasteboard
+        let urls = DroppedFiles.fileURLs(on: pasteboard)
+        if !urls.isEmpty {
+            typePaths(urls.map(\.path))
+            return true
+        }
+        let promises = DroppedFiles.promises(on: pasteboard)
+        guard !promises.isEmpty, let folder = try? DroppedFiles.promiseFolder() else { return false }
+        for promise in promises {
+            promise.receivePromisedFiles(
+                atDestination: folder, options: [:], operationQueue: Self.promiseQueue
+            ) { [weak self] url, error in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if let error {
+                        Trace.log("drop", "\(self.workspace)/\(self.tab) promise failed: \(error)")
+                        NSSound.beep()
+                        return
+                    }
+                    self.typePaths([url.path])
+                }
+            }
+        }
+        return true
+    }
+
+    /// Where promised files are written. Off the main thread: an app may take
+    /// its time to write a large one.
+    private static let promiseQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.qualityOfService = .userInitiated
+        return queue
+    }()
+
+    /// Paste the paths, with a space after them.
+    ///
+    /// Pasted, not typed: a program that asked for bracketed paste gets them
+    /// framed as one — Claude Code reads a pasted image path as the image —
+    /// and a shell runs nothing on the way in.
+    ///
+    /// The space is Terminal's, so what is typed next does not run into the
+    /// last path, and it goes inside the paste. Typed after it, it raced
+    /// Claude Code, which reads a pasted image before it puts the image in
+    /// the prompt: the space landed first, and the image after it. A space
+    /// pasted after an image path is dropped with the path, and one after any
+    /// other path stays.
+    private func typePaths(_ paths: [String]) {
+        guard let surface, !paths.isEmpty else { return }
+        // A quote waiting on a dead key belongs before the paths, as before a
+        // ⌘V.
+        commitComposition()
+        noteActivity()
+        let text = DroppedFiles.text(for: paths) + " "
+        text.withCString { ghostty_surface_text(surface, $0, UInt(strlen($0))) }
+        Trace.log("drop", "\(workspace)/\(tab) \(paths.count) path(s), \(text.utf8.count) byte(s)")
+    }
 
     // MARK: - clipboard
 

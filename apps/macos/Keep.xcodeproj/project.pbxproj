@@ -27,6 +27,7 @@
 		B04424C572755CE4309A1FE1 /* SurfacePool.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90248BC4509FC2E08EB2D118 /* SurfacePool.swift */; };
 		B59464F3438BD1075E780F68 /* TabStripView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3519A6ACCC0D876A65383EF4 /* TabStripView.swift */; };
 		BBDAF22F8DA5789B5C594CA3 /* QuickTerminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6571C8EA2DC4DE2201268BA /* QuickTerminal.swift */; };
+		E8B4A1D30F5C6B7A89D2E3F4 /* DroppedFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A3F0C21E4B5A6978C1D2E3 /* DroppedFiles.swift */; };
 		C14A34D9BAC90E62DE4B0FBD /* SurfaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C981DAB120BC0DE6416E716 /* SurfaceView.swift */; };
 		D10C70635824F4B9A739338F /* SidebarStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B52FB855ABF4E5D3B625D009 /* SidebarStateStore.swift */; };
 		E356BA1857859AE5D2018AFA /* Glass.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ADE1AE5D8DAF64D7C40B063 /* Glass.swift */; };
@@ -55,6 +56,7 @@
 		5461D3D1159F36613F895FA2 /* TabEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabEntity.swift; sourceTree = "<group>"; };
 		5B1FC2433A269BA7AA8510FD /* Daemon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Daemon.swift; sourceTree = "<group>"; };
 		84B8EF3EABE63EB3AD2EC738 /* PickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PickerView.swift; sourceTree = "<group>"; };
+		D7A3F0C21E4B5A6978C1D2E3 /* DroppedFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DroppedFiles.swift; sourceTree = "<group>"; };
 		90248BC4509FC2E08EB2D118 /* SurfacePool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurfacePool.swift; sourceTree = "<group>"; };
 		9C981DAB120BC0DE6416E716 /* SurfaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurfaceView.swift; sourceTree = "<group>"; };
 		A62F12BE65464B5D829B95B5 /* Session.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Session.swift; sourceTree = "<group>"; };
@@ -175,6 +177,7 @@
 		FFFCBC3ACDB8BBFD17E2945D /* Display */ = {
 			isa = PBXGroup;
 			children = (
+				D7A3F0C21E4B5A6978C1D2E3 /* DroppedFiles.swift */,
 				135A8576CC41EE22386C8C4D /* GhosttyApp.swift */,
 				90248BC4509FC2E08EB2D118 /* SurfacePool.swift */,
 				9C981DAB120BC0DE6416E716 /* SurfaceView.swift */,
@@ -251,6 +254,7 @@
 				1D448336142D0DABA8D8D0A8 /* SidebarHost.swift in Sources */,
 				D10C70635824F4B9A739338F /* SidebarStateStore.swift in Sources */,
 				F320A7F6CECB057B2CB6333F /* Snapshots.swift in Sources */,
+				E8B4A1D30F5C6B7A89D2E3F4 /* DroppedFiles.swift in Sources */,
 				B04424C572755CE4309A1FE1 /* SurfacePool.swift in Sources */,
 				C14A34D9BAC90E62DE4B0FBD /* SurfaceView.swift in Sources */,
 				38DFD5E48BF89D0DFF2D3606 /* TabContentContainer.swift in Sources */,
