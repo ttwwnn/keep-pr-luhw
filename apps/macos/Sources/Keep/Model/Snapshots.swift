@@ -212,7 +212,7 @@ enum ClaudeActivity: Hashable {
     /// A turn is running: the mode's colour, as before.
     case working
     /// The turn ended with work still running behind it: dynamic workflows,
-    /// background agents or shells.
+    /// background agents, shells or monitors.
     case waitingForWorkflow
     /// A question, a permission or a dialog is waiting on an answer.
     case waitingForYou
@@ -266,11 +266,13 @@ enum ClaudeActivity: Hashable {
         // Under the box: Claude Code offers the interrupt only while a turn
         // runs, and the box stays put however the conversation scrolls.
         if footer.contains(where: { $0.lowercased().contains("esc to interrupt") }) { return .working }
-        // Shells still running in the background (`· 2 shells ·` under the
-        // box, counted live): the turn is over but Claude Code will be back
-        // when they end, as with a workflow. The `… · 2 shells still running`
-        // on the turn's last line is not read — it stays after they end.
-        if footer.contains(where: isRunningShells) { return .waitingForWorkflow }
+        // Work still running in the background, counted live under the box
+        // (`· 2 shells ·`, `· 5 shells, 1 monitor ·`, `· 3 background tasks ·`):
+        // the turn is over but Claude Code will be back when it ends or
+        // speaks, as with a workflow. The `… · 5 shells, 1 monitor still
+        // running` on the turn's last line is not read — it stays after they
+        // end.
+        if footer.contains(where: isRunningBackgroundWork) { return .waitingForWorkflow }
         // Above it, the conversation — unless it is scrolled back, where the
         // last status line in sight is an old one.
         let conversation = lines[..<opening]
@@ -293,12 +295,31 @@ enum ClaudeActivity: Hashable {
         return .done
     }
 
-    /// `2 shells`, one of the `·`-separated parts of the footer.
-    private static func isRunningShells(_ line: Substring) -> Bool {
+    /// The kinds of background work whose count Claude Code keeps under the
+    /// box, as it words them, that bring it back when they end or report:
+    /// shells, monitors (a command's or an MCP server's), local agents,
+    /// dynamic workflows, MCP tasks, and a mix of those ("background tasks").
+    ///
+    /// Not every count is one: an Artifact comment monitor waits on people,
+    /// not on work, and would keep a tab blue for as long as the page is
+    /// watched; cloud sessions run on without this session; teams, dreaming
+    /// and the auto-mode scan are not work the turn handed off.
+    static let backgroundWork: Set<String> = [
+        "shell", "shells", "monitor", "monitors", "local agent", "local agents",
+        "background dynamic workflow", "background dynamic workflows",
+        "background task", "background tasks", "MCP task", "MCP tasks",
+    ]
+
+    /// `2 shells`, `5 shells, 1 monitor`: one of the `·`-separated parts of
+    /// the footer, every comma-separated item of it a count of running work.
+    static func isRunningBackgroundWork(_ line: Substring) -> Bool {
         line.split(separator: "·").contains { part in
-            let words = part.split(separator: " ")
-            return words.count == 2 && words[0].allSatisfy(\.isNumber)
-                && (words[1] == "shell" || words[1] == "shells")
+            let items = part.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            return !items.isEmpty && items.allSatisfy { item in
+                let words = item.split(separator: " ", maxSplits: 1)
+                return words.count == 2 && words[0].allSatisfy(\.isNumber)
+                    && backgroundWork.contains(String(words[1]))
+            }
         }
     }
 
