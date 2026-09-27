@@ -921,10 +921,11 @@ final class TabCellView: NSView {
     /// following its program, and nobody would know why.
     private var seed = ""
 
-    /// How much of the row the fill leaves alone, so a tab reads as a shape
-    /// inside the titlebar rather than as a full-height block. Taken off both
-    /// edges, so the capsule is two points shorter than this number suggests.
-    private let verticalInset: CGFloat = 13
+    /// How tall a tab's capsule is: what the titlebar row left it at thirteen
+    /// points off each edge, and the same across as the chrome buttons. Kept
+    /// in a shorter row too — full screen's, which has no traffic lights to
+    /// line up with — by taking less off the edges, never off the capsule.
+    private let capsuleHeight: CGFloat = 26
     /// Half the gap between two capsules: each tab insets its own fill, so
     /// neighbours end up twice this far apart.
     private let horizontalInset: CGFloat = 2
@@ -1015,6 +1016,7 @@ final class TabCellView: NSView {
 
     override func layout() {
         super.layout()
+        let verticalInset = max(2, ((bounds.height - capsuleHeight) / 2).rounded(.down))
         fill.frame = bounds.insetBy(dx: horizontalInset, dy: verticalInset)
         // A capsule: the radius is half the height, which is the shape a tab
         // lozenge has.

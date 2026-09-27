@@ -92,7 +92,12 @@ final class SidebarHost: NSViewController {
         // it says is content. Plus a little, so the first row is under the
         // traffic lights rather than against them.
         let titlebar = window.frame.height - window.contentLayoutRect.height
-        let wanted = (titlebar > 1 ? titlebar : 52) + 4
+        // Full screen has no titlebar and no traffic lights in the way, until
+        // the pointer pulls them down over everything anyway: the list starts
+        // at the top, level with the tab row beside it.
+        let wanted = window.styleMask.contains(.fullScreen)
+            ? 4
+            : (titlebar > 1 ? titlebar : 52) + 4
         if abs(listTop.constant - wanted) > 0.5 {
             listTop.constant = wanted
         }

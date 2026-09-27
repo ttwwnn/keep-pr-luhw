@@ -12,6 +12,23 @@ import AppKit
 final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let session: Session
     private let tabStrip = TabStripView()
+    /// The terminal side's view, whose top row the strip and its backdrop
+    /// share with the titlebar.
+    private var chromeContent: NSView!
+    /// The chrome row, windowed: strip, backdrop and terminal all hang off
+    /// the safe area, which is the titlebar's height.
+    private var windowedChrome: [NSLayoutConstraint] = []
+    /// The chrome row in full screen. AppKit takes the titlebar out of the
+    /// content there (it lives in a strip of its own that slides down with
+    /// the menu bar), the safe area's top inset drops to nothing, and a strip
+    /// hung off it went with it: the tabs, the search and the command button
+    /// vanished the moment the window was maximised. In full screen the strip
+    /// keeps the height it had and the terminal starts under it.
+    private var fullScreenStripHeight: NSLayoutConstraint!
+    private var fullScreenBackdrop: NSLayoutConstraint!
+    private var fullScreenUnderStrip: NSLayoutConstraint!
+    private var fullScreenUnderNothing: NSLayoutConstraint!
+    private var inFullScreen = false
     private let container = TabContentContainer()
     private let sidebarHost: SidebarHost
     private let picker = PickerView()
@@ -77,20 +94,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // toolbar sizing, no private views, and empty regions still drag the
         // window because the strip's hitTest passes them through.
         content.addSubview(tabStrip)
+        windowedChrome = [
+            chromeBackdrop.bottomAnchor.constraint(equalTo: content.safeAreaLayoutGuide.topAnchor),
+            tabStrip.bottomAnchor.constraint(equalTo: content.safeAreaLayoutGuide.topAnchor),
+            container.topAnchor.constraint(equalTo: content.safeAreaLayoutGuide.topAnchor),
+        ]
+        fullScreenStripHeight = tabStrip.heightAnchor.constraint(equalToConstant: 52)
+        fullScreenBackdrop = chromeBackdrop.bottomAnchor.constraint(equalTo: tabStrip.bottomAnchor)
+        fullScreenUnderStrip = container.topAnchor.constraint(equalTo: tabStrip.bottomAnchor)
+        fullScreenUnderNothing = container.topAnchor.constraint(equalTo: content.topAnchor)
+        chromeContent = content
         NSLayoutConstraint.activate([
             chromeBackdrop.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             chromeBackdrop.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             chromeBackdrop.topAnchor.constraint(equalTo: content.topAnchor),
-            chromeBackdrop.bottomAnchor.constraint(equalTo: content.safeAreaLayoutGuide.topAnchor),
             tabStrip.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             tabStrip.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             tabStrip.topAnchor.constraint(equalTo: content.topAnchor),
-            tabStrip.bottomAnchor.constraint(equalTo: content.safeAreaLayoutGuide.topAnchor),
             container.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             container.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            container.topAnchor.constraint(equalTo: content.safeAreaLayoutGuide.topAnchor),
             container.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-        ])
+        ] + windowedChrome)
         let terminal = NSViewController()
         terminal.view = content
 
@@ -265,6 +289,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         if tabStrip.isHidden != snapshot.sidebar.verticalTabs {
             tabStrip.isHidden = snapshot.sidebar.verticalTabs
             if snapshot.sidebar.verticalTabs { window?.isMovable = true }
+            // In full screen the row is the strip's own: without it the
+            // terminal takes the top.
+            if inFullScreen { layOutChrome() }
         }
 
         guard let active = snapshot.active else {
@@ -680,6 +707,49 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// window kills no sessions" true by construction rather than by care:
     /// the surfaces go, their clients go with them, and the shells carry on
     /// with one fewer viewer.
+    // MARK: - full screen
+
+    /// In full screen the row only has to hold the tabs: no traffic lights to
+    /// clear, no titlebar to match. A tab's capsule and the chrome buttons
+    /// are 26 points, and four either side is the row — the rest of the
+    /// screen goes to the terminal.
+    static let fullScreenRowHeight: CGFloat = 34
+
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        fullScreenStripHeight.constant = Self.fullScreenRowHeight
+        inFullScreen = true
+        layOutChrome()
+        Trace.log("window", "full screen, strip \(Int(fullScreenStripHeight.constant))")
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        inFullScreen = false
+        layOutChrome()
+    }
+
+    /// AppKit's own toolbar row — empty but for the sidebar toggle — slides
+    /// in with the menu bar instead of sitting above the strip for good.
+    func window(
+        _ window: NSWindow,
+        willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions = []
+    ) -> NSApplication.PresentationOptions {
+        proposedOptions.union([.fullScreen, .autoHideMenuBar, .autoHideToolbar])
+    }
+
+    private func layOutChrome() {
+        NSLayoutConstraint.deactivate(windowedChrome + [
+            fullScreenStripHeight, fullScreenBackdrop, fullScreenUnderStrip, fullScreenUnderNothing,
+        ])
+        if inFullScreen {
+            NSLayoutConstraint.activate([
+                fullScreenStripHeight, fullScreenBackdrop,
+                tabStrip.isHidden ? fullScreenUnderNothing : fullScreenUnderStrip,
+            ])
+        } else {
+            NSLayoutConstraint.activate(windowedChrome)
+        }
+    }
+
     func windowWillClose(_ notification: Notification) {
         session.removeWindow(windowID)
         SurfacePool.shared.discardAll(window: windowID)
