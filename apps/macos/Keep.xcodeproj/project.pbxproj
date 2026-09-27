@@ -17,6 +17,7 @@
 		37E566353DB718B0FE901831 /* WorkspaceSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05581E4C489CBFCB9EE0FC63 /* WorkspaceSidebar.swift */; };
 		38DFD5E48BF89D0DFF2D3606 /* TabContentContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1FDC62FD5F9E5BB0275F688A /* TabContentContainer.swift */; };
 		395692A2EBB054F85205F0CB /* Zoxide.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02DE3503066299BDBBF6E5E8 /* Zoxide.swift */; };
+		B2D0FFEE0000000000000001 /* Worktrees.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2D0FFEE0000000000000002 /* Worktrees.swift */; };
 		42C317891120DD2DE4CC07E0 /* MainWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39D911C7DB5BAD50525CD8D4 /* MainWindowController.swift */; };
 		43B96FF24E38E0F3B1F6D06A /* TabEntity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5461D3D1159F36613F895FA2 /* TabEntity.swift */; };
 		455019EEBA12AFF62782ABC6 /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = A62F12BE65464B5D829B95B5 /* Session.swift */; };
@@ -40,6 +41,7 @@
 
 /* Begin PBXFileReference section */
 		02DE3503066299BDBBF6E5E8 /* Zoxide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Zoxide.swift; sourceTree = "<group>"; };
+		B2D0FFEE0000000000000002 /* Worktrees.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Worktrees.swift; sourceTree = "<group>"; };
 		05581E4C489CBFCB9EE0FC63 /* WorkspaceSidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSidebar.swift; sourceTree = "<group>"; };
 		0B045B3D1F2B2D78B7D298AB /* TerminalText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalText.swift; sourceTree = "<group>"; };
 		135A8576CC41EE22386C8C4D /* GhosttyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyApp.swift; sourceTree = "<group>"; };
@@ -147,6 +149,7 @@
 				5B1FC2433A269BA7AA8510FD /* Daemon.swift */,
 				2C6200092D4D21F2BB040D2A /* DaemonPoller.swift */,
 				02DE3503066299BDBBF6E5E8 /* Zoxide.swift */,
+				B2D0FFEE0000000000000002 /* Worktrees.swift */,
 			);
 			path = Daemon;
 			sourceTree = "<group>";
@@ -274,6 +277,7 @@
 				4A2967F994700E628ED8287E /* WorkspaceEntity.swift in Sources */,
 				37E566353DB718B0FE901831 /* WorkspaceSidebar.swift in Sources */,
 				395692A2EBB054F85205F0CB /* Zoxide.swift in Sources */,
+				B2D0FFEE0000000000000001 /* Worktrees.swift in Sources */,
 				1A4DF695AB0229E7D445A48A /* main.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

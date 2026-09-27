@@ -294,6 +294,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rememberWindows()
         quitting = true
         session.prepareToQuit()
+        // Worktrees on their way to the Trash finish going first: a folder
+        // half moved, or moved with its repository never told, is worse
+        // than a quit that takes a few seconds.
+        if session.isTrashing {
+            session.onTrashDone = { NSApp.reply(toApplicationShouldTerminate: true) }
+            return .terminateLater
+        }
         return .terminateNow
     }
 

@@ -40,6 +40,9 @@ final class Session {
     private let sidebarStore = SidebarStateStore()
     private let tabOrderStore = TabOrderStore()
     private let nameStore = NameStore()
+    /// Windows whose question about closing is on its way: the worktrees
+    /// that go with the tabs are being looked up first.
+    private var asking: Set<WindowID> = []
     /// Claude Code's permission mode in each tab that runs it, as last read
     /// off its screen. Absent: manual, not Claude Code, or not read yet.
     private var claudeModes: [TabID: ClaudeMode] = [:]
@@ -583,20 +586,31 @@ final class Session {
 
         case .closeTab(let id):
             guard let id = id ?? views[window]?.tab else { return }
-            renderer(window)?.confirm(Confirmation(
+            askToEnd(worktreeTargets(of: [id]), Confirmation(
                 title: "Close the tab “\(tabName(id))”?",
                 detail: "Whatever is running in it will be ended.",
                 action: "Close Tab"
-            )) { [weak self] in self?.close(tab: id, from: window) }
+            ), about: "this tab", from: window) { [weak self] in self?.close(tab: id, from: window) ?? false }
 
         case .closePane(let pane):
             guard let tab = shownTab(in: window) else { return }
             let alone = tab.panes.isEmpty
-            renderer(window)?.confirm(Confirmation(
+            // The daemon tab this ends: the tab itself when it has no
+            // splits, else the one pane — whose conversation, if it has one,
+            // ends with it as surely as a tab's does.
+            let requested = pane ?? tab.focusedPane
+            let ending = tab.owns(pane: requested) ? requested : tab.id.root
+            let asked = tab.id
+            askToEnd([Worktrees.Target(workspace: tab.id.workspace, tabs: [ending])], Confirmation(
                 title: alone ? "Close the tab “\(tabName(tab.id))”?" : "Close this pane?",
                 detail: "Whatever is running in it will be ended.",
                 action: alone ? "Close Tab" : "Close Pane"
-            )) { [weak self] in self?.close(pane: pane, from: window) }
+            ), about: alone ? "this tab" : "this pane", from: window) { [weak self] in
+                // The pane the question named, in the tab it named — not
+                // whichever has the focus when yes is clicked.
+                guard let self, self.shownTab(in: window)?.id == asked else { return false }
+                return self.close(pane: ending, from: window)
+            }
 
         case .removeWorkspace(let name):
             guard var view = views[window], view.workspaces.contains(name) else { return }
@@ -621,11 +635,14 @@ final class Session {
             publish()
 
         case .killWorkspace(let name):
-            renderer(window)?.confirm(Confirmation(
+            let tabs = workspaces.first { $0.name == name }?.tabs.map(\.id) ?? []
+            askToEnd(worktreeTargets(of: tabs), Confirmation(
                 title: "Close the workspace “\(nameStore.workspace(name) ?? name)”?",
                 detail: "Every tab in it will be ended, in every window.",
                 action: "Close Workspace"
-            )) { [weak self] in self?.kill(workspace: name, from: window) }
+            ), about: "this workspace", from: window) { [weak self] in
+                self?.kill(workspace: name, from: window) ?? false
+            }
 
         case .split(let direction):
             guard let workspace = workspace(for: window), let tab = shownTab(in: window) else { return }
@@ -989,15 +1006,102 @@ final class Session {
             guard let item = views[window]?.picker?.items.first(where: { $0.id == id }),
                   case .running(let tab) = item.kind
             else { return }
-            renderer(window)?.confirm(Confirmation(
+            // Only the root: `dismiss` closes no panes.
+            askToEnd([Worktrees.Target(workspace: tab.workspace, tabs: [tab.root])], Confirmation(
                 title: "Close the tab “\(tabName(tab))”?",
                 detail: "Whatever is running in it will be ended.",
                 action: "Close Tab"
-            )) { [weak self] in self?.dismiss(tab: tab, from: window) }
+            ), about: "this tab", from: window) { [weak self] in
+                self?.dismiss(tab: tab, from: window) ?? false
+            }
         }
     }
 
     // MARK: - ending things, once confirmed
+
+    /// Ask before ending tabs, saying which worktrees go to the Trash with
+    /// them — and, on yes, end them and send those.
+    ///
+    /// The worktrees are found before the question, because they can only be
+    /// found while the conversations in the tabs are still running (see
+    /// `Worktrees`); the question waits for that, up to the helper's few
+    /// seconds. A second close asked of the same window meanwhile is dropped,
+    /// as the sheet would drop it. `end` reports whether the tabs did close:
+    /// nothing moves for a close that failed.
+    private func askToEnd(
+        _ targets: [Worktrees.Target], _ question: Confirmation, about subject: String,
+        from window: WindowID, end: @escaping () -> Bool
+    ) {
+        guard Worktrees.helper != nil, !targets.isEmpty else {
+            renderer(window)?.confirm(question) { _ = end() }
+            return
+        }
+        guard !asking.contains(window) else { return }
+        asking.insert(window)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let answer = Worktrees.list(targets)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.asking.remove(window)
+                let asked = Confirmation(
+                    title: question.title,
+                    detail: question.detail + Worktrees.note(for: answer, about: subject),
+                    action: question.action)
+                self.renderer(window)?.confirm(asked) { [weak self] in
+                    guard end() else { return }
+                    guard case .listing(let listing) = answer, !(listing.lixeira ?? []).isEmpty
+                    else { return }
+                    self?.trash(listing, from: window)
+                }
+            }
+        }
+    }
+
+    /// Each tab with its panes: every daemon tab closing it ends.
+    private func worktreeTargets(of tabs: [TabID]) -> [Worktrees.Target] {
+        tabs.map { id in
+            let panes = workspaces.first { $0.name == id.workspace }?
+                .tabs.first { $0.id == id }?.panes.map(\.tab) ?? []
+            return Worktrees.Target(workspace: id.workspace, tabs: [id.root] + panes)
+        }
+    }
+
+    /// Moves to the Trash still under way. The app waits for them before
+    /// quitting (`onTrashDone`): quitting mid-move would leave a folder half
+    /// dealt with and nobody told.
+    private var trashing = 0
+    var isTrashing: Bool { trashing > 0 }
+    var onTrashDone: (() -> Void)?
+
+    /// The move itself, off the main thread; what did not go is said — in
+    /// the window that asked, or any window still open.
+    private func trash(_ listing: Worktrees.Listing, from window: WindowID) {
+        trashing += 1
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let problems = Worktrees.trash(listing)
+            // Finder writes "Put Back" down for a trashed item a moment after
+            // the move; a process that quits at once loses it for all but the
+            // first. The wait is here, off the main thread, so a quit asked
+            // meanwhile waits for it too.
+            Thread.sleep(forTimeInterval: 2)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.trashing -= 1
+                if !problems.isEmpty {
+                    let text = "Not every worktree went to the Trash:\n"
+                        + problems.map { "• " + $0 }.joined(separator: "\n")
+                    Trace.log("worktree", text)
+                    let shown = self.renderer(window)
+                        ?? self.windowOrder.lazy.compactMap { self.renderer($0) }.first
+                    shown?.present(error: text)
+                }
+                if self.trashing == 0, let done = self.onTrashDone {
+                    self.onTrashDone = nil
+                    done()
+                }
+            }
+        }
+    }
 
     /// A tab's name as its row shows it, for a question about it.
     private func tabName(_ id: TabID) -> String {
@@ -1006,7 +1110,8 @@ final class Session {
         return Self.plainTitle(title, fallback: "tab \(id.root)")
     }
 
-    private func close(tab id: TabID, from window: WindowID) {
+    @discardableResult
+    private func close(tab id: TabID, from window: WindowID) -> Bool {
         do {
             // Close the panes first: they are daemon tabs of their own.
             let panes = workspaces.first { $0.name == id.workspace }?
@@ -1021,17 +1126,20 @@ final class Session {
             }
             refreshFromDaemon()
             publish()
+            return true
         } catch {
             renderer(window)?.present(error: error.localizedDescription)
+            return false
         }
     }
 
-    private func close(pane: UInt32?, from window: WindowID) {
+    @discardableResult
+    private func close(pane: UInt32?, from window: WindowID) -> Bool {
         // Closing the *focused* pane, which for a tab with no splits is
         // the tab itself. A root closed while panes remain is not a hole:
         // the daemon promotes an orphaned pane to stand on its own, so
         // what survives is the rest of the arrangement.
-        guard let workspace = workspace(for: window), let tab = shownTab(in: window) else { return }
+        guard let workspace = workspace(for: window), let tab = shownTab(in: window) else { return false }
         let requested = pane ?? tab.focusedPane
         let target = tab.owns(pane: requested) ? requested : tab.id.root
         // Closing is idempotent on purpose. Pressing ⌘W faster than the
@@ -1044,18 +1152,22 @@ final class Session {
            let heir = tab.panes.first(where: { $0.splitOf == tab.id.root }) {
             nameStore.moveTab(from: tab.id, to: TabID(workspace: tab.id.workspace, root: heir.tab))
         }
-        try? Daemon.closeTab(target, in: workspace.name)
+        let closed = (try? Daemon.closeTab(target, in: workspace.name)) != nil
         SurfacePool.shared.discard(workspace: workspace.name, tab: target)
         refreshFromDaemon()
         publish()
         renderer(window)?.focusActiveTerminal()
+        return closed
     }
 
-    private func kill(workspace name: String, from window: WindowID) {
+    @discardableResult
+    private func kill(workspace name: String, from window: WindowID) -> Bool {
+        var killed = true
         do {
             try Daemon.kill(name)
         } catch {
             renderer(window)?.present(error: error.localizedDescription)
+            killed = false
         }
         forget([name])
         SurfacePool.shared.discardAll(workspace: name)
@@ -1067,15 +1179,18 @@ final class Session {
             }
         }
         publish()
+        return killed
     }
 
-    private func dismiss(tab: TabID, from window: WindowID) {
-        try? Daemon.closeTab(tab.root, in: tab.workspace)
+    @discardableResult
+    private func dismiss(tab: TabID, from window: WindowID) -> Bool {
+        let closed = (try? Daemon.closeTab(tab.root, in: tab.workspace)) != nil
         SurfacePool.shared.discard(workspace: tab.workspace, tab: tab.root)
         refreshFromDaemon()
         let items = pickerItems(for: window)
         views[window]?.picker?.items = items
         publish()
+        return closed
     }
 
     // MARK: - internals
