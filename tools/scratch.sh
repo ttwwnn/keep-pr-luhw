@@ -57,8 +57,16 @@ require_scratch_socket() {
 # build of their own and never take the person's away in the first place.
 restore_app() {
     local bundle=$1
-    ( unset KEEP_SOCKET KEEP_TRACE KEEP_STATE_DIR KEEP_APP_NAME; open "$bundle" >/dev/null 2>&1 ) &
+    ( unset KEEP_SOCKET KEEP_TRACE KEEP_STATE_DIR KEEP_APP_NAME \
+        KEEP_AI_USAGE_HOME KEEP_AI_USAGE_CLAUDE_URL KEEP_AI_USAGE_CODEX_URL
+      open "$bundle" >/dev/null 2>&1 ) &
 }
+
+# A test build reads no logins. The sidebar's usage footer asks the real AI
+# services with the real tokens it finds in this home, and every suite that
+# opens KeepDev would otherwise do that on each launch. An empty place to look
+# in; the footer's own test points it at a made-up home instead.
+export KEEP_AI_USAGE_HOME="${KEEP_AI_USAGE_HOME:-/var/empty}"
 
 # Put the client and daemon that were just built inside the app bundle.
 #

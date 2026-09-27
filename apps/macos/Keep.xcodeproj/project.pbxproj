@@ -11,6 +11,7 @@
 		064F6B18D47591C6F8B8D9D0 /* DaemonPoller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C6200092D4D21F2BB040D2A /* DaemonPoller.swift */; };
 		1A4DF695AB0229E7D445A48A /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ADD16A5C6AADA495B3C279A /* main.swift */; };
 		1D448336142D0DABA8D8D0A8 /* SidebarHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21F9A16ACB41B05219BCFCA5 /* SidebarHost.swift */; };
+		A1C0FFEE0000000000000003 /* UsageFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0FFEE0000000000000004 /* UsageFooter.swift */; };
 		1DB5C2ADB8A13CF62A60771D /* TerminalText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B045B3D1F2B2D78B7D298AB /* TerminalText.swift */; };
 		301FC7FCBC5FCEE57D947FFA /* Daemon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B1FC2433A269BA7AA8510FD /* Daemon.swift */; };
 		37E566353DB718B0FE901831 /* WorkspaceSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05581E4C489CBFCB9EE0FC63 /* WorkspaceSidebar.swift */; };
@@ -33,6 +34,7 @@
 		E356BA1857859AE5D2018AFA /* Glass.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ADE1AE5D8DAF64D7C40B063 /* Glass.swift */; };
 		EB832312EF01355D4678683C /* GhosttyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 135A8576CC41EE22386C8C4D /* GhosttyApp.swift */; };
 		F320A7F6CECB057B2CB6333F /* Snapshots.swift in Sources */ = {isa = PBXBuildFile; fileRef = 409F4278222CDF7A60BB0BC8 /* Snapshots.swift */; };
+		A1C0FFEE0000000000000001 /* AIUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0FFEE0000000000000002 /* AIUsage.swift */; };
 		FCEBE0A215CA639F0322FF20 /* PickerActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D71D0DA44EC6DD5C261D1F8A /* PickerActions.swift */; };
 /* End PBXBuildFile section */
 
@@ -45,6 +47,7 @@
 		1621ED87636A9ED661051FFE /* TerminalPrefs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPrefs.swift; sourceTree = "<group>"; };
 		1FDC62FD5F9E5BB0275F688A /* TabContentContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabContentContainer.swift; sourceTree = "<group>"; };
 		21F9A16ACB41B05219BCFCA5 /* SidebarHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarHost.swift; sourceTree = "<group>"; };
+		A1C0FFEE0000000000000004 /* UsageFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageFooter.swift; sourceTree = "<group>"; };
 		26C7493E188242FF1E50B5D4 /* KeepWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeepWindow.swift; sourceTree = "<group>"; };
 		2C6200092D4D21F2BB040D2A /* DaemonPoller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonPoller.swift; sourceTree = "<group>"; };
 		3519A6ACCC0D876A65383EF4 /* TabStripView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabStripView.swift; sourceTree = "<group>"; };
@@ -52,6 +55,7 @@
 		3ADD16A5C6AADA495B3C279A /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		3ADE1AE5D8DAF64D7C40B063 /* Glass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Glass.swift; sourceTree = "<group>"; };
 		409F4278222CDF7A60BB0BC8 /* Snapshots.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Snapshots.swift; sourceTree = "<group>"; };
+		A1C0FFEE0000000000000002 /* AIUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIUsage.swift; sourceTree = "<group>"; };
 		455B3F87550E85E26FFD249F /* WorkspaceEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceEntity.swift; sourceTree = "<group>"; };
 		5461D3D1159F36613F895FA2 /* TabEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabEntity.swift; sourceTree = "<group>"; };
 		5B1FC2433A269BA7AA8510FD /* Daemon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Daemon.swift; sourceTree = "<group>"; };
@@ -97,6 +101,7 @@
 				84B8EF3EABE63EB3AD2EC738 /* PickerView.swift */,
 				B6571C8EA2DC4DE2201268BA /* QuickTerminal.swift */,
 				21F9A16ACB41B05219BCFCA5 /* SidebarHost.swift */,
+				A1C0FFEE0000000000000004 /* UsageFooter.swift */,
 				1FDC62FD5F9E5BB0275F688A /* TabContentContainer.swift */,
 				3519A6ACCC0D876A65383EF4 /* TabStripView.swift */,
 				0B045B3D1F2B2D78B7D298AB /* TerminalText.swift */,
@@ -119,6 +124,7 @@
 				A62F12BE65464B5D829B95B5 /* Session.swift */,
 				B52FB855ABF4E5D3B625D009 /* SidebarStateStore.swift */,
 				409F4278222CDF7A60BB0BC8 /* Snapshots.swift */,
+				A1C0FFEE0000000000000002 /* AIUsage.swift */,
 				5461D3D1159F36613F895FA2 /* TabEntity.swift */,
 				1621ED87636A9ED661051FFE /* TerminalPrefs.swift */,
 				455B3F87550E85E26FFD249F /* WorkspaceEntity.swift */,
@@ -252,8 +258,10 @@
 				BBDAF22F8DA5789B5C594CA3 /* QuickTerminal.swift in Sources */,
 				455019EEBA12AFF62782ABC6 /* Session.swift in Sources */,
 				1D448336142D0DABA8D8D0A8 /* SidebarHost.swift in Sources */,
+				A1C0FFEE0000000000000003 /* UsageFooter.swift in Sources */,
 				D10C70635824F4B9A739338F /* SidebarStateStore.swift in Sources */,
 				F320A7F6CECB057B2CB6333F /* Snapshots.swift in Sources */,
+				A1C0FFEE0000000000000001 /* AIUsage.swift in Sources */,
 				E8B4A1D30F5C6B7A89D2E3F4 /* DroppedFiles.swift in Sources */,
 				B04424C572755CE4309A1FE1 /* SurfacePool.swift in Sources */,
 				C14A34D9BAC90E62DE4B0FBD /* SurfaceView.swift in Sources */,

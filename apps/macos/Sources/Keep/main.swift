@@ -273,6 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let claudeModes = ClaudeModeWatcher(session: session)
         claudeModes.start()
         self.claudeModes = claudeModes
+        UsageMonitor.shared.start()
 
         // ⌃` from anywhere: the drop-down terminal. Registered after launch,
         // once — a Carbon hotkey outlives whoever registered it, and two
