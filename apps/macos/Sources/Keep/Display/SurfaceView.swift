@@ -162,6 +162,7 @@ final class TerminalSurfaceView: NSView {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.paintVeil()
+                self.tellScheme(after: 1.0)
                 // A rest asked for before the colour was known did nothing;
                 // now that it is known, honour it.
                 if self.isResting, self.restingVeil == nil {
@@ -177,6 +178,8 @@ final class TerminalSurfaceView: NSView {
         applyColorScheme()
         updateSize()
         startDisplayLink()
+        // Once the client has had time to attach: see `tellScheme`.
+        tellScheme(after: 2.5)
     }
 
     /// Where this surface says whether it is on screen.
@@ -654,6 +657,53 @@ final class TerminalSurfaceView: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyColorScheme()
+    }
+
+    /// Bumped to call off a report asked for and not yet sent: the reasons
+    /// to send one tend to arrive together, and one report answers them all.
+    private var schemeTicket = 0
+
+    /// Tell the program in here whether the ground is dark or light: the
+    /// `CSI ? 997 ; 1 n` (dark) or `2 n` (light) a terminal sends a program
+    /// that switched these reports on with mode 2031. Claude Code does, and
+    /// answers by asking for the background and redrawing in the theme that
+    /// goes with it.
+    ///
+    /// libghostty sends it itself when the scheme changes — but only through
+    /// a surface attached at that moment, and only once. A tab nobody has
+    /// shown since the app opened has no surface to be told through, and its
+    /// Claude Code goes on in the theme it started in: its dark theme's white
+    /// on a ground that has since turned white. And the one report can
+    /// outrun the colours it announces, so that the background it asks for
+    /// next is still the old one. So each surface says it again once its
+    /// program has had a moment to be attached, and again a moment after the
+    /// ground has settled. Said twice, it costs the program a question whose
+    /// answer it already had.
+    ///
+    /// Only to a program that asked for it: the same bytes typed into a
+    /// shell are garbage on its command line. Whether it did is in the
+    /// daemon's repaint of the tab, which switches on the modes its program
+    /// switched on.
+    private func tellScheme(after delay: TimeInterval) {
+        schemeTicket += 1
+        let ticket = schemeTicket
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.schemeTicket == ticket, self.surface != nil,
+                  GhosttyApp.shared.groundIsDark != nil
+            else { return }
+            let workspace = self.workspace, tab = self.tab
+            DispatchQueue.global(qos: .utility).async {
+                let screen = (try? Daemon.colouredPreview(workspace: workspace, tab: tab)) ?? ""
+                guard screen.contains("\u{1b}[?2031h") else { return }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.schemeTicket == ticket,
+                          let dark = GhosttyApp.shared.groundIsDark
+                    else { return }
+                    self.perform("text:\\x1b[?997;\(dark ? 1 : 2)n")
+                    Trace.log("scheme", "\(workspace)/\(tab) told \(dark ? "dark" : "light")")
+                }
+            }
+        }
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -1247,6 +1297,9 @@ final class TerminalSurfaceView: NSView {
 
     func noteTitle(_ title: String) {
         guard title != lastTitle else { return }
+        // The first title is the program speaking through this surface:
+        // attached, and a report sent now reaches it. See `tellScheme`.
+        if lastTitle == nil { tellScheme(after: 0.5) }
         lastTitle = title
         onTitle?(title)
     }
