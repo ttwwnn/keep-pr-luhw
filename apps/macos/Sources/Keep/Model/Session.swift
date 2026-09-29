@@ -49,6 +49,8 @@ final class Session {
     /// Where Claude Code's turn stands in each tab that runs it, as last read
     /// off its screen. Absent: not Claude Code, or not read yet.
     private var claudeActivities: [TabID: ClaudeActivity] = [:]
+    /// When each tab's Claude Code started waiting on an answer.
+    private var waitingSince: [TabID: Date] = [:]
 
     /// What each window is pointed at, and who to hand its snapshot to.
     ///
@@ -734,6 +736,7 @@ final class Session {
             nameStore.moveTab(from: id, to: TabID(workspace: to, root: newRoot))
             claudeModes[TabID(workspace: to, root: newRoot)] = claudeModes.removeValue(forKey: id)
             claudeActivities[TabID(workspace: to, root: newRoot)] = claudeActivities.removeValue(forKey: id)
+            waitingSince[TabID(workspace: to, root: newRoot)] = waitingSince.removeValue(forKey: id)
             refreshFromDaemon()
             // Land where it was dropped, not where the daemon appended it.
             if let target = workspaces.first(where: { $0.name == to }) {
@@ -1505,6 +1508,22 @@ final class Session {
         workspaces.flatMap(\.tabs).filter { Self.program(of: $0) == "claude" }.map(\.id)
     }
 
+    /// Whether a tab is doing something, as opposed to having something open.
+    ///
+    /// The daemon's `busy` is a program running in front of the shell, which
+    /// for Claude Code is always: it is running from the moment it opens,
+    /// its turn over or not. So where the screen has said how the turn
+    /// stands, that is what is asked — at work while a turn runs or waits on
+    /// work it handed off, idle once it is over or waiting on you. Where it
+    /// has not, the daemon's answer stands, as it always has.
+    private func isAtWork(_ tab: TabEntity) -> Bool {
+        switch claudeActivities[tab.id] {
+        case .working, .waitingForWorkflow: return true
+        case .done, .waitingForYou: return false
+        case nil: return tab.busy
+        }
+    }
+
     /// What the screens said. `.some(nil)` is a footer naming no mode —
     /// manual — and clears the colour; a tab missing from `modes` could not
     /// be read this time, and keeps what it had.
@@ -1518,6 +1537,14 @@ final class Session {
         next = next.filter { running.contains($0.key) }
         nextActivities = nextActivities.filter { running.contains($0.key) }
         guard next != claudeModes || nextActivities != claudeActivities else { return }
+        // When each tab began waiting on you, kept for as long as it waits:
+        // the moment is what the badge breathes from, and a poll that finds
+        // it still waiting must not make it new again.
+        var since = waitingSince.filter { nextActivities[$0.key] == .waitingForYou }
+        for (id, activity) in nextActivities where activity == .waitingForYou && since[id] == nil {
+            since[id] = Date()
+        }
+        waitingSince = since
         claudeModes = next
         claudeActivities = nextActivities
         publish()
@@ -1730,19 +1757,23 @@ final class Session {
                 running: workspace.tabs.flatMap(\.busyTitles),
                 place: workspace.place,
                 dot: workspace.dot,
+                needsYou: workspace.tabs.filter { claudeActivities[$0.id] == .waitingForYou }.count,
+                needsYouSince: workspace.tabs.compactMap { waitingSince[$0.id] }.max(),
+                working: workspace.tabs.contains { isAtWork($0) },
                 isActive: workspace.name == view.workspace,
                 tabRows: workspace.tabs.map { tab in
                     SessionSnapshot.SidebarTab(
                         id: tab.id,
                         title: Self.plainTitle(displayTitle(of: tab), fallback: "tab \(tab.id.root)"),
                         command: Self.program(of: tab),
-                        busy: tab.busy,
+                        busy: isAtWork(tab),
                         isActive: tab.id == view.tab,
                         isElsewhere: views.contains {
                             $0.key != window && $0.value.tab == tab.id
                         },
                         claudeMode: claudeModes[tab.id],
-                        claudeActivity: claudeActivities[tab.id]
+                        claudeActivity: claudeActivities[tab.id],
+                        wantsYouSince: waitingSince[tab.id]
                     )
                 },
                 expanded: !sidebar.folded.contains(workspace.name)
@@ -1757,7 +1788,8 @@ final class Session {
                 isActive: tab.id == view.tab,
                 isElsewhere: views.contains { $0.key != window && $0.value.tab == tab.id },
                 claudeMode: claudeModes[tab.id],
-                claudeActivity: claudeActivities[tab.id]
+                claudeActivity: claudeActivities[tab.id],
+                wantsYouSince: waitingSince[tab.id]
             )
         }
         let active = shownTab(in: window).map { tab in

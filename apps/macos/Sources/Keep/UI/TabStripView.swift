@@ -893,6 +893,14 @@ final class TabCellView: NSView {
     /// Whether the capsule is currently being offered, so that a poll which
     /// only changed a title does not restart the fade.
     private var offering = false
+    /// The badge a tab wears while Claude Code waits on an answer in it —
+    /// `Attention` — over the selection's glass and in its place, since a
+    /// tab asking for you is the one thing in the row that must not read as
+    /// just another title.
+    private let attention = NSView()
+    /// Until when the badge breathes, and in which colours, so that a poll
+    /// which changes nothing does not start the breath over.
+    private var breathing: (until: Date?, dark: Bool)?
     private let label = NSTextField(labelWithString: "")
     /// Kept, because how much room the title is owed changes with how much
     /// room the tab has. As inequalities against a centred label they become
@@ -944,6 +952,13 @@ final class TabCellView: NSView {
         fill.wantsLayer = true
         if !fillIsGlass { fill.layer?.cornerCurve = .continuous }
         addSubview(fill)
+
+        // Over the glass: a tab asking for you is still the tab you are in,
+        // and the badge says the more urgent of the two.
+        attention.wantsLayer = true
+        attention.layer?.cornerCurve = .continuous
+        attention.isHidden = true
+        addSubview(attention)
 
         label.font = .systemFont(ofSize: 12)
         label.alignment = .center
@@ -1030,6 +1045,18 @@ final class TabCellView: NSView {
         // choosing it is one capsule firming up rather than two capsules.
         hoverFill.frame = fill.frame
         hoverFill.layer?.cornerRadius = radius
+        // The badge takes the capsule's place — except on a lone tab, which
+        // has no capsule and spans the row: there it hugs the title, where
+        // the eye is, rather than lighting up the whole titlebar.
+        if alone {
+            let title = label.frame
+            attention.frame = NSRect(
+                x: (title.minX - 12).rounded(), y: fill.frame.minY,
+                width: (title.width + 24).rounded(), height: fill.frame.height)
+        } else {
+            attention.frame = fill.frame
+        }
+        attention.layer?.cornerRadius = radius
         // What a tab shows is decided by how much of it there is. The number
         // is a hint and steps aside first; the close button goes next, since
         // a tab too narrow to name is not one to be closed by aim; the title
@@ -1079,20 +1106,31 @@ final class TabCellView: NSView {
         self.shortcut = shortcut
         self.alone = alone
 
+        let wantsYou = item.claudeActivity?.wantsYou == true
         var title = item.title.isEmpty ? "untitled" : item.title
-        // Unless the title already says so — programs that title themselves
-        // with the same mark were showing it twice.
-        if item.busy && !title.hasPrefix("✳") { title = "✳ \(title)" }
-        let font = NSFont.systemFont(ofSize: 12, weight: item.isActive ? .medium : .regular)
+        if wantsYou {
+            // The hand goes where the marks were: Claude Code's `✳` and its
+            // spinner say it is running, which is not the news.
+            title = Session.plainTitle(title, fallback: "untitled")
+        } else if item.busy && !title.hasPrefix("✳") {
+            // Unless the title already says so — programs that title
+            // themselves with the same mark were showing it twice.
+            title = "✳ \(title)"
+        }
+        let font = NSFont.systemFont(
+            ofSize: 12, weight: wantsYou ? .semibold : item.isActive ? .medium : .regular)
         label.font = font
 
         // The tab you are in already answers, and a lone tab is a window
         // title with nothing to choose between — neither is an offer, so
         // neither takes one.
-        let offering = hovered && !item.isActive && !alone
+        let offering = hovered && !item.isActive && !alone && !wantsYou
+        // A turn under way in the manual mode, which has no colour of its
+        // own, is not left the dimmest title in the row: a finished turn's
+        // grey would outshine it.
         let ink = item.isActive || alone
             ? palette.text
-            : (offering ? palette.hoverText : palette.dimText)
+            : (offering || item.claudeActivity == .working ? palette.hoverText : palette.dimText)
         // A tab running Claude Code in one of its modes wears that mode's
         // colour, the one its footer is written in, so a tab left in bypass
         // reads as one from across the row. Only the colour: the weight and
@@ -1115,10 +1153,29 @@ final class TabCellView: NSView {
             fill.layer?.borderColor = palette.edge.cgColor
             fill.layer?.backgroundColor = palette.selectedFill.cgColor
         }
+        // A tab waiting on you wears the badge, and the hover's faint capsule
+        // under it would only muddy the orange.
+        attention.isHidden = !wantsYou
+        if wantsYou {
+            attention.layer?.backgroundColor = Attention.fill(dark: palette.dark).cgColor
+        }
+        // Breathing for a while after it starts waiting, and only out of
+        // sight: the tab you are in is in front of you already, and a badge
+        // pulsing under the thing you are reading would be a light left
+        // flashing in your face.
+        let breathe = (
+            until: wantsYou && !item.isActive ? Attention.lastBreath(since: item.wantsYouSince) : nil,
+            dark: palette.dark)
+        if breathing?.until != breathe.until || breathing?.dark != breathe.dark {
+            breathing = breathe
+            if let layer = attention.layer {
+                Attention.pulse(layer, dark: breathe.dark, until: breathe.until)
+            }
+        }
 
         shortcutLabel.stringValue = shortcut ?? ""
-        shortcutLabel.textColor = palette.dimText
-        closeButton.contentTintColor = palette.text
+        shortcutLabel.textColor = wantsYou ? Attention.ink.withAlphaComponent(0.6) : palette.dimText
+        closeButton.contentTintColor = wantsYou ? Attention.ink : palette.text
 
         // What a tab is, beside what it is called: split into panes, and open
         // in another window as well. Drawn as symbols rather than as the box
@@ -1129,11 +1186,16 @@ final class TabCellView: NSView {
         if item.hasPanes { marks.append("rectangle.split.2x1") }
         if item.isElsewhere { marks.append("macwindow.on.rectangle") }
         let colour = label.textColor ?? palette.text
-        if marks.isEmpty {
+        if marks.isEmpty && !wantsYou {
             if label.stringValue != title { label.stringValue = title }
         } else {
-            let line = NSMutableAttributedString(
-                string: title, attributes: [.font: font, .foregroundColor: colour])
+            let line = NSMutableAttributedString()
+            if wantsYou {
+                line.append(Self.symbol(Attention.symbol, colour: colour, size: font.pointSize))
+                line.append(NSAttributedString(string: " "))
+            }
+            line.append(NSAttributedString(
+                string: title, attributes: [.font: font, .foregroundColor: colour]))
             for mark in marks {
                 line.append(NSAttributedString(string: "  "))
                 line.append(Self.symbol(mark, colour: colour, size: font.pointSize))
@@ -1141,8 +1203,11 @@ final class TabCellView: NSView {
             label.attributedStringValue = line
         }
 
-        setAccessibilityLabel(title)
-        toolTip = item.isElsewhere ? "\(item.title) — open in another window" : item.title
+        let said = wantsYou ? "\(title) — Claude Code is waiting for you" : title
+        setAccessibilityLabel(said)
+        toolTip = item.isElsewhere
+            ? "\(wantsYou ? said : item.title) — open in another window"
+            : (wantsYou ? said : item.title)
         needsLayout = true
     }
 

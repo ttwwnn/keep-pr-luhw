@@ -231,21 +231,28 @@ final class AdaptiveLozengeView: NSView {
 // MARK: - Where Claude Code's turn stands
 
 extension ClaudeActivity {
-    /// Blue while dynamic workflows are awaited, green while a question or a
-    /// permission waits on you, grey once the turn is over. A turn still
+    /// The title's ink, in colours taken from Claude Code's own themes, as
+    /// the modes' are. The grey it writes a finished turn's `✻ Baked for
+    /// 23s` in, once the turn is over. And while the turn waits on work it
+    /// handed off, a plain blue: the calm of something running without you,
+    /// and a hue no mode wears — Claude Code's own colour for background
+    /// work is a cyan that its plan mode's teal would swallow, and the blue
+    /// of its spinner sits a shade from its accept-edits violet. A turn still
     /// running has none: the mode's colour, as before.
+    ///
+    /// A turn waiting on you is not told by ink. It is the one state in the
+    /// row that is somebody's to act on, and it wears a badge — see
+    /// `Attention`; the ink here is the one printed on that badge, and means
+    /// nothing without it.
     func color(dark: Bool) -> NSColor? {
-        let rgb: (CGFloat, CGFloat, CGFloat)
         switch (self, dark) {
         case (.working, _): return nil
-        case (.waitingForWorkflow, true): rgb = (100, 170, 255)
-        case (.waitingForWorkflow, false): rgb = (0, 92, 197)
-        case (.waitingForYou, true): rgb = (80, 200, 120)
-        case (.waitingForYou, false): rgb = (0, 128, 56)
-        case (.done, true): rgb = (150, 150, 150)
-        case (.done, false): rgb = (118, 118, 118)
+        case (.waitingForWorkflow, true): return srgb(122, 180, 232)
+        case (.waitingForWorkflow, false): return srgb(37, 99, 235)
+        case (.waitingForYou, _): return Attention.ink
+        case (.done, true): return srgb(153, 153, 153)
+        case (.done, false): return srgb(102, 102, 102)
         }
-        return NSColor(srgbRed: rgb.0 / 255, green: rgb.1 / 255, blue: rgb.2 / 255, alpha: 1)
     }
 
     /// Resolved against the appearance it is drawn in; nil where the turn has
@@ -256,6 +263,116 @@ extension ClaudeActivity {
             color(dark: appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua) ?? .labelColor
         }
     }
+
+    /// Whether the tab is to be marked as waiting on an answer from you.
+    var wantsYou: Bool { self == .waitingForYou }
+}
+
+/// A turn waiting on an answer — a question, a permission, a plan to
+/// approve — drawn to be seen from across the room.
+///
+/// Every other state in the row is a coloured word, and a coloured word
+/// among coloured words does not stand out however loud its colour: the
+/// green this used to be sat next to the plan mode's teal and could not be
+/// told from it. So this one is a shape rather than a hue — a filled badge,
+/// in the vivid orange of Claude Code's own themes (its fast mode's), with
+/// dark ink on it the way a warning sign is printed, and a raised hand in
+/// front of the name.
+///
+/// And for its first minute it breathes, while the tab is out of sight,
+/// between that orange and a paler one, the ink legible at both ends. Every
+/// badge on one clock, so three tabs waiting pulse as one signal rather
+/// than as three.
+enum Attention {
+    /// The badge's ground: Claude Code's vivid orange, its dark theme's on a
+    /// dark ground and its light theme's on a light one.
+    static func fill(dark: Bool) -> NSColor {
+        dark ? srgb(255, 120, 20) : srgb(255, 106, 0)
+    }
+
+    /// The far end of a breath: the same orange with light let into it.
+    static func glow(dark: Bool) -> NSColor {
+        dark ? srgb(255, 178, 112) : srgb(255, 166, 96)
+    }
+
+    /// Printed on the badge, at either end of a breath.
+    static let ink = srgb(33, 22, 12)
+
+    /// A raised hand: the turn is somebody else's.
+    static let symbol = "hand.raised.fill"
+
+    /// One breath, fill to glow and back.
+    static let period: TimeInterval = 1.8
+
+    /// Where the breath is at a moment: 0 at the fill, 1 at the glow. Taken
+    /// from the clock rather than from when a badge appeared, so that badges
+    /// drawn apart — the strip's and the sidebar's, one AppKit and the other
+    /// SwiftUI — breathe together.
+    static func phase(at date: Date) -> Double {
+        let t = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period) / period
+        return (1 - cos(2 * .pi * t)) / 2
+    }
+
+    /// The badge's colour at a moment of the breath.
+    static func colour(dark: Bool, phase: Double) -> NSColor {
+        let from = fill(dark: dark), to = glow(dark: dark)
+        let p = CGFloat(max(0, min(1, phase)))
+        return NSColor(
+            srgbRed: from.redComponent + (to.redComponent - from.redComponent) * p,
+            green: from.greenComponent + (to.greenComponent - from.greenComponent) * p,
+            blue: from.blueComponent + (to.blueComponent - from.blueComponent) * p,
+            alpha: 1)
+    }
+
+    /// How long a badge breathes once its tab starts waiting: long enough to
+    /// be caught when it happens, and no longer — a tab left waiting for an
+    /// afternoon is not to be a light flashing in the corner of the eye all
+    /// afternoon. After it the badge holds still, filled and orange, which is
+    /// loud enough on its own.
+    ///
+    /// It breathes under Reduce Motion too. What that setting spares people
+    /// is things moving — sliding, zooming, springing — and this moves
+    /// nothing: it is a change of colour in place, the one signal here meant
+    /// to be caught out of the corner of the eye, and it stops by itself.
+    static let breathesFor: TimeInterval = 60
+
+    /// When a badge whose tab started waiting at `since` stops breathing:
+    /// the end of the breath that `breathesFor` runs into, so that it comes
+    /// to rest on the fill instead of jumping there from halfway.
+    static func lastBreath(since: Date?) -> Date? {
+        guard let since else { return nil }
+        let end = since.addingTimeInterval(breathesFor).timeIntervalSinceReferenceDate
+        return Date(timeIntervalSinceReferenceDate: (end / period).rounded(.up) * period)
+    }
+
+    /// Breathe a layer's background on the shared clock until `until`, or
+    /// hold it still.
+    static func pulse(_ layer: CALayer, dark: Bool, until: Date?) {
+        let key = "keep.attention.pulse"
+        layer.removeAnimation(forKey: key)
+        let now = Date()
+        guard let until, until > now else { return }
+        let breath = CABasicAnimation(keyPath: "backgroundColor")
+        breath.fromValue = fill(dark: dark).cgColor
+        breath.toValue = glow(dark: dark).cgColor
+        breath.duration = period / 2
+        breath.autoreverses = true
+        breath.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        // Started as far into a breath as the clock already is, so this badge
+        // joins the others where they are instead of starting its own; and
+        // as many whole breaths from there as reach `until`, which is where
+        // one of them ends.
+        let into = now.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period)
+        breath.beginTime = layer.convertTime(CACurrentMediaTime(), from: nil) - into
+        breath.repeatCount = Float(((until.timeIntervalSince(now) + into) / period).rounded())
+        breath.fillMode = .backwards
+        layer.add(breath, forKey: key)
+    }
+}
+
+/// Colours given as the bytes Claude Code's themes spell them in.
+private func srgb(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat) -> NSColor {
+    NSColor(srgbRed: red / 255, green: green / 255, blue: blue / 255, alpha: 1)
 }
 
 // MARK: - Claude Code's mode colours

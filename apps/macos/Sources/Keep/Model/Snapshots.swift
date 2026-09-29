@@ -719,6 +719,19 @@ struct SessionSnapshot: Hashable {
         /// most needs a word about itself is the one you have not been to.
         let place: String
         let dot: Dot
+        /// How many of its tabs have Claude Code waiting on an answer. What
+        /// the header says when the group is folded shut, since then the
+        /// tabs cannot say it themselves.
+        let needsYou: Int
+        /// When the latest of them started waiting: the header's badge
+        /// breathes for a while after that, as a tab's does.
+        let needsYouSince: Date?
+        /// Whether anything in here is at work: a command running in a
+        /// shell, or Claude Code in the middle of a turn or waiting on work
+        /// it handed off. Claude Code sitting at its prompt is a program that
+        /// is running, and not work — every tab it is open in would
+        /// otherwise be marked busy for as long as it stays open.
+        let working: Bool
         let isActive: Bool
         /// The tabs themselves, for the sidebar that nests them under the
         /// workspace. Always carried — a handful of small values — and the
@@ -736,6 +749,8 @@ struct SessionSnapshot: Hashable {
         let title: String
         /// What is running in there. Empty when nothing can say.
         let command: String
+        /// At work rather than merely open: a Claude Code whose turn is over
+        /// is not busy, however long it stays running. See `Session.isAtWork`.
         let busy: Bool
         let isActive: Bool
         /// Another window is showing it — the strip's ⧉, said vertically.
@@ -745,6 +760,8 @@ struct SessionSnapshot: Hashable {
         let claudeMode: ClaudeMode?
         /// Where Claude Code's turn stands there, when it can be told.
         let claudeActivity: ClaudeActivity?
+        /// When it started waiting on you, if it is: see `Attention`.
+        let wantsYouSince: Date?
     }
 
     struct StripItem: Hashable, Identifiable {
@@ -761,6 +778,7 @@ struct SessionSnapshot: Hashable {
         /// As on the sidebar's row.
         let claudeMode: ClaudeMode?
         let claudeActivity: ClaudeActivity?
+        let wantsYouSince: Date?
     }
 
     struct ActiveTab: Hashable {

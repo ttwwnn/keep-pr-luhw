@@ -21,8 +21,9 @@ import SwiftUI
 /// state; the current row carries a wash in a hue derived from its own name,
 /// so that selection is unmistakable without being the same blue every app
 /// uses for it; a tab running Claude Code in one of its permission modes is
-/// titled in the colour Claude Code prints that mode in. Nothing else in here
-/// is coloured.
+/// titled in the colour Claude Code prints that mode in, and a tab where it
+/// waits on you wears a badge in its orange. Nothing else in here is
+/// coloured.
 struct WorkspaceSidebar: View {
     @ObservedObject var model: SidebarRows
     let dispatch: (Intent) -> Void
@@ -278,12 +279,17 @@ struct WorkspaceSidebar: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .onHover { inside in notePointer(inside, onNameOf: .workspace(row.name)) }
-                if row.dot == .busy {
+                if row.working {
                     // The one fact worth carrying up from the tabs: something
-                    // is running in here, visible with the group folded shut.
+                    // is at work in here, visible with the group folded shut.
                     Text("✳")
                         .font(counter)
                         .foregroundStyle(Palette.busy)
+                }
+                if row.needsYou > 0 && !row.expanded {
+                    // And the one fact that must not stay folded away: a tab
+                    // in here is waiting on you. Open, the tab says so itself.
+                    attentionBadge(count: row.needsYou, since: row.needsYouSince)
                 }
                 Spacer(minLength: 8)
                 // The +'s room, kept here so the fold stays at the far end.
@@ -444,6 +450,7 @@ struct WorkspaceSidebar: View {
     {
         let chosen = tab.isActive && row.isActive
         let hoveredHere = hovered == tabHoverKey(tab) || dropTarget == tabHoverKey(tab)
+        let wantsYou = tab.claudeActivity?.wantsYou == true
         return Button {
             clickTab(tab, chosen: chosen)
         } label: {
@@ -451,14 +458,19 @@ struct WorkspaceSidebar: View {
                 // The title arrives with the marks its program wrote already
                 // stripped — programs that title themselves with this same ✳,
                 // as Claude Code does, were showing it twice — so the row
-                // draws the one mark, and it is this one.
-                if tab.busy {
+                // draws the one mark, and it is this one. Or the raised hand,
+                // when the tab is waiting on you: see `Attention`.
+                if wantsYou {
+                    Image(systemName: Attention.symbol)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Palette.attentionInk)
+                } else if tab.busy {
                     Text("✳")
                         .font(.system(size: 10))
                         .foregroundStyle(Palette.busy)
                 }
                 Text(tab.title)
-                    .font(.system(size: 12, weight: chosen ? .medium : .regular))
+                    .font(.system(size: 12, weight: wantsYou ? .semibold : chosen ? .medium : .regular))
                     .foregroundStyle(titleInk(for: tab, chosen: chosen, hovered: hoveredHere))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -471,14 +483,14 @@ struct WorkspaceSidebar: View {
                 if !tab.command.isEmpty {
                     Text("— \(tab.command)")
                         .font(.system(size: 12))
-                        .foregroundStyle(Palette.inkFaint)
+                        .foregroundStyle(wantsYou ? Palette.attentionInk.opacity(0.62) : Palette.inkFaint)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                 }
                 if tab.isElsewhere {
                     Image(systemName: "macwindow.on.rectangle")
                         .font(.system(size: 9))
-                        .foregroundStyle(Palette.inkFaint)
+                        .foregroundStyle(wantsYou ? Palette.attentionInk.opacity(0.62) : Palette.inkFaint)
                 }
                 Spacer(minLength: 0)
                 // The close button's room, kept whether or not it is showing,
@@ -488,13 +500,14 @@ struct WorkspaceSidebar: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
             .contentShape(Rectangle())
-            .background(capsule(chosen: chosen, hovered: hoveredHere))
+            .background(capsule(
+                chosen: chosen, hovered: hoveredHere, wantsYou: wantsYou, since: tab.wantsYouSince))
         }
         .buttonStyle(.plain)
         // Laid over the row rather than inside its label: a button inside a
         // button hands its clicks to whichever of the two SwiftUI prefers.
         .overlay(alignment: .trailing) {
-            closeButton(tab, visible: hoveredHere && dragged == nil)
+            closeButton(tab, visible: hoveredHere && dragged == nil, onBadge: wantsYou)
                 .padding(.trailing, 9)
         }
         .padding(.leading, 12)
@@ -618,14 +631,16 @@ struct WorkspaceSidebar: View {
 
     /// The row's ×: there under the pointer, gone otherwise, the way the
     /// strip's own tabs offer it.
-    private func closeButton(_ tab: SessionSnapshot.SidebarTab, visible: Bool) -> some View {
+    private func closeButton(
+        _ tab: SessionSnapshot.SidebarTab, visible: Bool, onBadge: Bool = false
+    ) -> some View {
         Button {
             lastClicked = nil
             dispatch(.closeTab(tab.id))
         } label: {
             Image(systemName: "xmark")
                 .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(Palette.inkResting)
+                .foregroundStyle(onBadge ? Palette.attentionInk : Palette.inkResting)
                 .frame(width: 16, height: 16)
                 .background(Circle().fill(Palette.wash(0.08)))
                 .contentShape(Circle())
@@ -648,6 +663,10 @@ struct WorkspaceSidebar: View {
     {
         if let activity = tab.claudeActivity?.dynamicColor { return Color(nsColor: activity) }
         if let mode = tab.claudeMode { return Color(nsColor: mode.dynamicColor) }
+        // A turn running in the manual mode, which has no colour: at least
+        // the resting ink, and not the faint one a finished turn's grey would
+        // outshine — work under way must not read as the quietest thing here.
+        if tab.claudeActivity == .working { return chosen ? Palette.ink : Palette.inkResting }
         return chosen ? Palette.ink : hovered ? Palette.inkResting : Palette.inkFaint
     }
 
@@ -889,14 +908,37 @@ struct WorkspaceSidebar: View {
     }
 
     /// The strip's capsule, vertically: glass for the tab being shown, a
-    /// breath of white under the pointer, nothing otherwise.
+    /// breath of white under the pointer, nothing otherwise — and the badge
+    /// over all of them for a tab waiting on you, breathing unless it is the
+    /// one being shown.
     @ViewBuilder
-    private func capsule(chosen: Bool, hovered: Bool) -> some View {
-        if chosen {
+    private func capsule(
+        chosen: Bool, hovered: Bool, wantsYou: Bool = false, since: Date? = nil
+    ) -> some View {
+        if wantsYou {
+            AttentionCapsule(until: chosen ? nil : Attention.lastBreath(since: since))
+        } else if chosen {
             GlassRow(cornerRadius: 13, tint: Palette.litRow)
         } else if hovered {
             Capsule(style: .continuous).fill(Palette.wash(0.055))
         }
+    }
+
+    /// The header's word for tabs waiting on you, folded out of sight: the
+    /// raised hand and how many, on the same badge they wear themselves.
+    private func attentionBadge(count: Int, since: Date?) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: Attention.symbol)
+                .font(.system(size: 9, weight: .semibold))
+            Text("\(count)")
+                .font(.system(size: 10.5, weight: .semibold))
+                .monospacedDigit()
+        }
+        .foregroundStyle(Palette.attentionInk)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1.5)
+        .background(AttentionCapsule(until: Attention.lastBreath(since: since)))
+        .help(count == 1 ? "1 tab waiting for you" : "\(count) tabs waiting for you")
     }
 
     /// Hover state shares one string field with the workspace rows; a tab's
@@ -1191,6 +1233,9 @@ private enum Palette {
     static let busy = state(0.82, 0.15, 85)
     static let idle = state(0.70, 0.05, 250)
 
+    /// What is printed on the badge of a tab waiting on you.
+    static let attentionInk = Color(nsColor: Attention.ink)
+
     /// The wash behind the current workspace, in a hue that is that
     /// workspace's own.
     ///
@@ -1210,6 +1255,55 @@ private enum Palette {
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             ? NSColor.white.withAlphaComponent(0.30)
             : NSColor.black.withAlphaComponent(0.14)
+    }
+}
+
+/// The badge of a tab waiting on you (`Attention`), behind a SwiftUI row:
+/// the strip's orange, breathing on the strip's clock until `until`, and
+/// still after it — or from the start, with no `until` at all.
+///
+/// The breath is drawn from the clock at each frame rather than left to an
+/// animation that repeats: this list is rebuilt whenever a title changes,
+/// and an animation restarted by every rebuild is a badge that twitches
+/// instead of breathing. The frames stop coming when the breathing does.
+private struct AttentionCapsule: View {
+    let until: Date?
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let dark = scheme == .dark
+        if let until, until > Date() {
+            TimelineView(Breaths(until: until)) { context in
+                Capsule(style: .continuous).fill(Color(nsColor: Attention.colour(
+                    dark: dark,
+                    phase: context.date >= until ? 0 : Attention.phase(at: context.date))))
+            }
+        } else {
+            Capsule(style: .continuous).fill(Color(nsColor: Attention.fill(dark: dark)))
+        }
+    }
+
+    /// Thirty frames a second up to the end of the last breath, that end
+    /// itself so the badge comes to rest on it, and then none: a schedule
+    /// that runs out, where `.animation` would go on asking for frames of a
+    /// badge that has stopped moving.
+    private struct Breaths: TimelineSchedule {
+        let until: Date
+
+        func entries(from start: Date, mode: TimelineScheduleMode) -> AnyIterator<Date> {
+            let step = mode == .lowFrequency ? 1.0 : 1.0 / 30
+            var next = start
+            var ended = false
+            return AnyIterator {
+                guard !ended else { return nil }
+                if next >= until {
+                    ended = true
+                    return until
+                }
+                defer { next = next.addingTimeInterval(step) }
+                return next
+            }
+        }
     }
 }
 
