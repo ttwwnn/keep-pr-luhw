@@ -826,12 +826,12 @@ final class TabStripView: NSView {
         let glassTint: NSColor
 
         static var current: Palette {
-            let background = GhosttyApp.shared.terminalBackground ?? .black
-            let rgb = background.usingColorSpace(.sRGB) ?? .black
-            let luminance = 0.2126 * rgb.redComponent
-                + 0.7152 * rgb.greenComponent
-                + 0.0722 * rgb.blueComponent
-            let dark = luminance < 0.5
+            // Until libghostty has said what the ground is, the system's
+            // appearance is the best guess — the window follows the same
+            // one until then. Guessing black instead put white ink on the
+            // white titlebar of a light macOS.
+            let dark = GhosttyApp.shared.groundIsDark
+                ?? (NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
             let ink: NSColor = dark ? .white : .black
             return Palette(
                 dark: dark,

@@ -206,6 +206,8 @@ final class QuickTerminal: NSObject, NSWindowDelegate {
         if let color = ghostty.terminalBackground {
             content.layer?.backgroundColor =
                 color.withAlphaComponent(CGFloat(opacity)).cgColor
+            // As the app's windows do: the ground decides, not the system.
+            panel.appearance = NSAppearance(named: GhosttyApp.isDark(color) ? .darkAqua : .aqua)
         }
         if opacity < 1, let app = ghostty.app {
             ghostty_set_window_background_blur(

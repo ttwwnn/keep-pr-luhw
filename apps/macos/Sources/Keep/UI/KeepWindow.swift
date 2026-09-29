@@ -140,6 +140,17 @@ final class KeepWindow: NSWindow, NSToolbarDelegate {
             return
         }
         appliedAppearance = next
+        // The chrome answers to the ground it sits on, not to the system: a
+        // dark terminal in a light macOS keeps a dark sidebar, and a light
+        // theme in a dark one a light sidebar. Everything that asks an
+        // appearance for its colour — the sidebar's inks, Claude Code's
+        // colours on its rows, the selection's glass, a sheet — then asks the
+        // question the tab strip has always asked of the terminal's colour.
+        // Left to the system, the two halves of the window answered it
+        // differently: black ink on the dark sidebar of a light macOS.
+        appearance = next.color.map {
+            NSAppearance(named: GhosttyApp.isDark($0) ? .darkAqua : .aqua)
+        } ?? nil
         sidebarToggleHost?.retint()
 
         let isTransparent = next.opacity < 1 && opaqueHolds == 0
@@ -210,9 +221,13 @@ final class KeepWindow: NSWindow, NSToolbarDelegate {
     /// or cool background keeps its cast instead of washing out — the sidebar
     /// should read as the same room with less light in it, not as a different
     /// surface stuck to the side.
+    ///
+    /// A smaller step on a light ground. The same quarter of the light taken
+    /// off white is a mid-grey slab beside a white terminal; a shade under
+    /// it is what a sidebar looks like on a light Mac.
     private static func recessed(_ color: NSColor) -> NSColor {
         guard let rgb = color.usingColorSpace(.sRGB) else { return color }
-        let factor: CGFloat = 0.72
+        let factor: CGFloat = GhosttyApp.isDark(color) ? 0.72 : 0.955
         return NSColor(
             srgbRed: rgb.redComponent * factor,
             green: rgb.greenComponent * factor,

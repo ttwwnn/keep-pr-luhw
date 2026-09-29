@@ -45,6 +45,25 @@ final class GhosttyApp {
     private(set) var terminalBackgroundOpacity: Double = 1
     private(set) var terminalBackgroundBlur: Int16 = 0
 
+    /// Whether the terminal's ground is dark: the question every colour in
+    /// the chrome is an answer to, asked of the colour rather than of the
+    /// system. A dark theme in a light macOS is a dark window. Nil until
+    /// libghostty has said what the ground is.
+    var groundIsDark: Bool? {
+        terminalBackground.map(Self.isDark)
+    }
+
+    /// Dark or light by how much light a colour gives off — relative
+    /// luminance, halfway. The tab strip has always decided this way; now
+    /// everything does.
+    static func isDark(_ color: NSColor) -> Bool {
+        guard let rgb = color.usingColorSpace(.sRGB) else { return true }
+        let luminance = 0.2126 * rgb.redComponent
+            + 0.7152 * rgb.greenComponent
+            + 0.0722 * rgb.blueComponent
+        return luminance < 0.5
+    }
+
     /// What this app has been told about the terminal's appearance, over
     /// and above the person's own config. Read once at launch and kept here
     /// rather than fetched: the config file is written from it, and the
@@ -96,6 +115,12 @@ final class GhosttyApp {
         terminalBackground = background
         terminalBackgroundOpacity = opacity
         terminalBackgroundBlur = blur
+        if let rgb = background.usingColorSpace(.sRGB) {
+            let hex = String(
+                format: "#%02x%02x%02x", Int((rgb.redComponent * 255).rounded()),
+                Int((rgb.greenComponent * 255).rounded()), Int((rgb.blueComponent * 255).rounded()))
+            Trace.log("chrome", "ground \(hex) \(Self.isDark(background) ? "dark" : "light")")
+        }
         NotificationCenter.default.post(name: Self.backgroundDidChange, object: nil)
     }
 
@@ -614,6 +639,14 @@ final class GhosttyApp {
         appearanceObserver = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
             self?.syncColorScheme()
         }
+        // And once more, whatever the scheme. The background arrives only
+        // with a config change, and the scheme change above is the only thing
+        // that makes one at startup — which in a light macOS is not a change
+        // at all, since libghostty starts out assuming light. Nothing came,
+        // the chrome was never tinted, and the window stood there in the
+        // system's white around a dark terminal, with the tab strip still
+        // writing in white for the black it had guessed.
+        reloadConfig()
     }
 
     private var appearanceObserver: NSKeyValueObservation?
