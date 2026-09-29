@@ -36,6 +36,8 @@
 		EB832312EF01355D4678683C /* GhosttyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 135A8576CC41EE22386C8C4D /* GhosttyApp.swift */; };
 		F320A7F6CECB057B2CB6333F /* Snapshots.swift in Sources */ = {isa = PBXBuildFile; fileRef = 409F4278222CDF7A60BB0BC8 /* Snapshots.swift */; };
 		A1C0FFEE0000000000000001 /* AIUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0FFEE0000000000000002 /* AIUsage.swift */; };
+		C3E0FFEE0000000000000003 /* ExternalHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E0FFEE0000000000000004 /* ExternalHelper.swift */; };
+		C3E0FFEE0000000000000005 /* AccountMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E0FFEE0000000000000006 /* AccountMenu.swift */; };
 		FCEBE0A215CA639F0322FF20 /* PickerActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D71D0DA44EC6DD5C261D1F8A /* PickerActions.swift */; };
 /* End PBXBuildFile section */
 
@@ -58,6 +60,8 @@
 		3ADE1AE5D8DAF64D7C40B063 /* Glass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Glass.swift; sourceTree = "<group>"; };
 		409F4278222CDF7A60BB0BC8 /* Snapshots.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Snapshots.swift; sourceTree = "<group>"; };
 		A1C0FFEE0000000000000002 /* AIUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIUsage.swift; sourceTree = "<group>"; };
+		C3E0FFEE0000000000000004 /* ExternalHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalHelper.swift; sourceTree = "<group>"; };
+		C3E0FFEE0000000000000006 /* AccountMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountMenu.swift; sourceTree = "<group>"; };
 		455B3F87550E85E26FFD249F /* WorkspaceEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceEntity.swift; sourceTree = "<group>"; };
 		5461D3D1159F36613F895FA2 /* TabEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabEntity.swift; sourceTree = "<group>"; };
 		5B1FC2433A269BA7AA8510FD /* Daemon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Daemon.swift; sourceTree = "<group>"; };
@@ -104,6 +108,7 @@
 				B6571C8EA2DC4DE2201268BA /* QuickTerminal.swift */,
 				21F9A16ACB41B05219BCFCA5 /* SidebarHost.swift */,
 				A1C0FFEE0000000000000004 /* UsageFooter.swift */,
+				C3E0FFEE0000000000000006 /* AccountMenu.swift */,
 				1FDC62FD5F9E5BB0275F688A /* TabContentContainer.swift */,
 				3519A6ACCC0D876A65383EF4 /* TabStripView.swift */,
 				0B045B3D1F2B2D78B7D298AB /* TerminalText.swift */,
@@ -150,6 +155,7 @@
 				2C6200092D4D21F2BB040D2A /* DaemonPoller.swift */,
 				02DE3503066299BDBBF6E5E8 /* Zoxide.swift */,
 				B2D0FFEE0000000000000002 /* Worktrees.swift */,
+				C3E0FFEE0000000000000004 /* ExternalHelper.swift */,
 			);
 			path = Daemon;
 			sourceTree = "<group>";
@@ -265,6 +271,8 @@
 				D10C70635824F4B9A739338F /* SidebarStateStore.swift in Sources */,
 				F320A7F6CECB057B2CB6333F /* Snapshots.swift in Sources */,
 				A1C0FFEE0000000000000001 /* AIUsage.swift in Sources */,
+				C3E0FFEE0000000000000003 /* ExternalHelper.swift in Sources */,
+				C3E0FFEE0000000000000005 /* AccountMenu.swift in Sources */,
 				E8B4A1D30F5C6B7A89D2E3F4 /* DroppedFiles.swift in Sources */,
 				B04424C572755CE4309A1FE1 /* SurfacePool.swift in Sources */,
 				C14A34D9BAC90E62DE4B0FBD /* SurfaceView.swift in Sources */,

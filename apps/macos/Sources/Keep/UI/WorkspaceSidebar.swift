@@ -141,7 +141,7 @@ struct WorkspaceSidebar: View {
             // window must keep, and in a short window it gives way from the
             // bottom rather than making the window grow. First claim on the
             // height otherwise, so the list is what scrolls.
-            UsageFooter(monitor: .shared)
+            UsageFooter(monitor: .shared, dispatch: dispatch)
                 .frame(minHeight: 0, alignment: .top)
                 .clipped()
                 .layoutPriority(1)

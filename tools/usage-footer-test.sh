@@ -15,7 +15,16 @@
 #   - the requests carry the account's token and a CLI's user agent, and go
 #     nowhere but the stand-in;
 #   - the footer sits under the last workspace and stays on the floor when
-#     the list outgrows the window.
+#     the list outgrows the window;
+#   - with `keep-ia` there (a stand-in, tools/ai-accounts-test/fake-keep-ia.py),
+#     each account carries its place in the order of priority and arrows to
+#     move it: the order changes on screen at once, even with the helper slow
+#     to answer, holds against a read of the files meanwhile, is what the
+#     helper then writes, and is taken back, and said, when the helper
+#     refuses; the arrows are there folded too; and "+" asks the helper for a
+#     login in this window's workspace, whose account shows up within seconds
+#     and stays when a round of readings that set out before it lands;
+#   - without it, the footer is as it was: no places, no arrows, no "+".
 #
 #   tools/usage-footer-test.sh
 #
@@ -23,7 +32,8 @@
 # logins, and a stand-in on 127.0.0.1 answers in the services' own format —
 # the only kind of address the app accepts in place of the real ones. A
 # daemon of its own on a scratch socket, KeepDev, read through the
-# accessibility tree (tools/axtext.swift). About a minute.
+# accessibility tree (tools/axtext.swift, tools/axpress.swift). About two
+# minutes.
 #
 # Your app, your daemon and your logins are never touched.
 
@@ -40,6 +50,7 @@ SOCKET=/tmp/keep-usage-$$.sock
 WORK=$(mktemp -d /tmp/keep-usage-XXXXXX)
 AXTEXT=$WORK/axtext
 AXPOS=$WORK/axpos
+AXPRESS=$WORK/axpress
 KEEP=$APP/Contents/Resources/keep   # the client and daemon the build put in the bundle
 HOME_WS=$(id -un)
 PASSED=0
@@ -75,6 +86,7 @@ if [ -z "${SKIP_BUILD:-}" ]; then
     ./tools/build-dev.sh >/dev/null || { say "could not build $APP_NAME — run tools/build-dev.sh"; exit 1; }
 fi
 swiftc -O tools/axtext.swift -o "$AXTEXT" 2>/dev/null || { say "could not build axtext"; exit 1; }
+swiftc -O tools/axpress.swift -o "$AXPRESS" 2>/dev/null || { say "could not build axpress"; exit 1; }
 
 # Where on screen a text is: the top of the first element carrying it, and
 # the bottom of its window — enough to tell a footer on the floor from one
@@ -151,9 +163,12 @@ PY
 
 # ----------------------------------------------- the stand-in for both services
 cat >"$WORK/standin.py" <<'PY'
-import json, sys, time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import json, os, sys, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 log = open(sys.argv[2], "a", buffering=1)
+# While this file is there every answer takes six seconds: a round of
+# readings kept in flight on purpose.
+slow = os.path.join(os.path.dirname(sys.argv[2]), "slow")
 codex_token = open(sys.argv[3]).read()
 reset = time.strftime("%Y-%m-%dT%H:%M:%S.123456+00:00", time.gmtime(time.time() + 4 * 3600 + 600))
 week = time.strftime("%Y-%m-%dT%H:%M:%S.654321+00:00", time.gmtime(time.time() + 37 * 3600))
@@ -170,6 +185,8 @@ CODEX = {"plan_type": "pro", "rate_limit": {"limit_reached": False,
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
+        if os.path.exists(slow):
+            time.sleep(6)
         auth = self.headers.get("Authorization", "")
         token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
         who = "codex" if token == codex_token else token
@@ -190,7 +207,7 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
-server = HTTPServer(("127.0.0.1", 0), H)
+server = ThreadingHTTPServer(("127.0.0.1", 0), H)
 open(sys.argv[1], "w").write(str(server.server_address[1]))
 server.serve_forever()
 PY
@@ -205,7 +222,18 @@ export KEEP_STATE_DIR=$WORK/state
 export KEEP_AI_USAGE_HOME=$FAKE
 export KEEP_AI_USAGE_CLAUDE_URL=http://127.0.0.1:$PORT/claude
 export KEEP_AI_USAGE_CODEX_URL=http://127.0.0.1:$PORT/codex
+# keep-ia, played by a stand-in that logs what it is asked and answers out
+# of the made-up home; its logins' tabs open in this daemon.
+mkdir -p "$WORK/ia"
+cp tools/ai-accounts-test/fake-keep-ia.py "$WORK/fake-keep-ia.py"
+chmod +x "$WORK/fake-keep-ia.py"
+export KEEP_IA_BIN=$WORK/fake-keep-ia.py
+export FAKE_IA_DIR=$WORK/ia
+export FAKE_IA_KEEP=$KEEP
 mkdir -p "$KEEP_STATE_DIR"
+# Unfolded, as the checks below read it: a run cut short while it was folded
+# would otherwise leave the next one reading the other form.
+defaults write dev.luhw.keep.dev usageFooterFolded -bool false 2>/dev/null
 require_scratch_socket
 rm -f "$SOCKET"
 
@@ -258,15 +286,183 @@ check "Codex asked for its workspace" yes "$(grep -F '"token": "codex"' "$WORK/r
 check "no token in the trace" no "$(grep -qE 'tok-|Bearer' "$WORK/app.log" && echo yes || echo no)"
 
 say ""
+say "the order of priority, with keep-ia"
+line_of() { grep -nF -- "$1" "$WORK/ax.txt" | head -1 | cut -d: -f1; }
+first_of() {  # first_of <a> <b>: whichever of the two lines comes first
+    local a b
+    a=$(line_of "$1"); b=$(line_of "$2")
+    if [ -n "$a" ] && { [ -z "$b" ] || [ "$a" -lt "$b" ]; }; then echo "$1"
+    elif [ -n "$b" ]; then echo "$2"
+    else echo none; fi
+}
+ax() { "$AXTEXT" "$APP_NAME" >"$WORK/ax.txt" 2>/dev/null; }
+until_text() {  # until_text <text> <tenths>
+    local tries=$2
+    while [ "$tries" -gt 0 ]; do
+        ax
+        [ "$(has "$1")" = yes ] && { echo yes; return; }
+        sleep 0.1
+        tries=$((tries - 1))
+    done
+    echo no
+}
+# The same, but looked for only until a moment on the clock ($SECONDS): for
+# what must happen before something else would do it anyway.
+until_text_by() {  # until_text_by <text> <deadline, in $SECONDS>
+    while [ "$SECONDS" -lt "$2" ]; do
+        ax
+        [ "$(has "$1")" = yes ] && { echo yes; return; }
+        sleep 0.1
+    done
+    echo no
+}
+calls() { python3 -c 'import json,sys
+try:
+    for l in open(sys.argv[1]): print(" ".join(json.loads(l)["argv"]))
+except FileNotFoundError: pass' "$WORK/ia/calls.jsonl"; }
+ordem() { tr '\n' ' ' <"$FAKE/.claude/contas/.ordem" 2>/dev/null | sed 's/ $//'; }
+ax
+check "each account carries its place in the order" yes "$(has "1 · Claude · main")"
+check "the rest where they always were: by name, Claude before GPT" "yes yes yes" \
+    "$(has "2 · Claude · limited") $(has "3 · Claude · spare") $(has "4 · GPT · main")"
+check "the first can go down" yes "$(has "Move Claude · main down")"
+check "but not up" no "$(has "Move Claude · main up")"
+check "the last can go up" yes "$(has "Move GPT · main up")"
+check "but not down" no "$(has "Move GPT · main down")"
+check "and there is a way to sign in to another account" yes "$(has "Sign in to another account")"
+
+# The helper takes five seconds to answer: the screen does not wait for it.
+echo 5 >"$WORK/ia/slow"
+"$AXPRESS" "$APP_NAME" press "Move Claude · main down"
+sleep 0.5
+ax
+check "down: the order changes on screen at once, the helper still at it" \
+    "1 · Claude · limited" "$(first_of "1 · Claude · limited" "1 · Claude · main")"
+check "and the one moved says its new place" yes "$(has "2 · Claude · main")"
+check "the helper is asked to move it, by its key" "ordem mover claude:main baixo --json" "$(calls | tail -1)"
+check "and told which daemon the app is on" yes \
+    "$(grep -qF "\"socket\": \"$SOCKET\"" "$WORK/ia/calls.jsonl" && echo yes || echo no)"
+# Meanwhile a file the footer watches changes — the account in use written
+# again — and the accounts are read afresh, the old order with them.
+echo main >"$VAULT/.ativa"
+sleep 3
+ax
+check "a read of the files before the helper wrote does not put the old order back" \
+    "1 · Claude · limited" "$(first_of "1 · Claude · limited" "1 · Claude · main")"
+sleep 2.5
+check "the helper wrote the order the screen showed" \
+    "claude:limited claude:main claude:spare gpt:principal" "$(ordem)"
+# Past the ten seconds the order is held against the files: what is shown then
+# is what the files say.
+sleep 5
+ax
+check "and after the hold the screen reads it from the file the same" \
+    "1 · Claude · limited" "$(first_of "1 · Claude · limited" "1 · Claude · main")"
+
+# Now the helper says no, two seconds later.
+echo 2 >"$WORK/ia/slow"
+touch "$WORK/ia/fail"
+"$AXPRESS" "$APP_NAME" press "Move Claude · main up"
+pressed=$SECONDS
+sleep 0.5
+ax
+check "up, and the helper will refuse: shown at once all the same" \
+    "1 · Claude · main" "$(first_of "1 · Claude · limited" "1 · Claude · main")"
+# Taken back when the refusal lands, two seconds after the press — not when
+# the hold on the order shown runs out, ten seconds after it.
+check "refused: taken back" yes "$(until_text_by "1 · Claude · limited" $((pressed + 7)))"
+check "and said, in the helper's words" yes \
+    "$(until_text "Could not change the order: simulated keep-ia failure" 20)"
+check "the order the helper has is untouched" \
+    "claude:limited claude:main claude:spare gpt:principal" "$(ordem)"
+rm -f "$WORK/ia/fail" "$WORK/ia/slow"
+
+say ""
+say "signing in to another account"
+# A round of readings set out now, and kept in flight past the login: when it
+# lands it must not take away an account it had not heard of.
+touch "$WORK/slow"
+"$AXPRESS" "$APP_NAME" press "Measure now"
+sleep 0.5
+"$AXPRESS" "$APP_NAME" open "Sign in to another account"
+check "+ offers a login to either service" \
+    "$(printf '\t1\tSign in to another Claude account…\n\t1\tSign in to another GPT account…')" \
+    "$("$AXPRESS" "$APP_NAME" items)"
+"$AXPRESS" "$APP_NAME" pick "Sign in to another GPT account…"
+sleep 1
+check "the helper is asked for a GPT login in this window's workspace" \
+    "entrar gpt --ws=$HOME_WS --json" "$(calls | tail -1)"
+check "the login's account shows up within five seconds" yes "$(until_text "GPT · new" 50)"
+check "at the end of the order" yes "$(has "5 · GPT · new")"
+# The round lands when its slowest answer does: the main account's, six
+# seconds on (the limited account is not asked again before its Retry-After).
+waited=0
+while ! grep -aqE "usage +claude:U1 status=200 in [0-9]{4,}ms" "$WORK/app.log" && [ "$waited" -lt 60 ]; do
+    sleep 0.25; waited=$((waited + 1))
+done
+rm -f "$WORK/slow"
+sleep 1
+ax
+check "a round of readings that set out before it landed without taking it away" yes "$(has "GPT · new")"
+login_tab=$(grep -aoE "login in $HOME_WS/[0-9]+" "$WORK/app.log" | tail -1 | sed 's#.*/##')
+check "and the tab the login is in is the one shown" yes \
+    "$([ -n "$login_tab" ] && grep -aqE "switch +→ $HOME_WS/$login_tab " "$WORK/app.log" && echo yes || echo no)"
+
+say ""
+say "folded"
+"$AXPRESS" "$APP_NAME" press "AI usage"
+sleep 1
+ax
+check "one line an account, and the arrows still beside each" "yes yes yes" \
+    "$(has "Move GPT · new up") $(has "Move Claude · limited down") $(has "Move Claude · spare up")"
+check "folded for real: no bars" "no no" "$(has "Claude · spare 5h") $(has "Claude · main 5h")"
+"$AXPRESS" "$APP_NAME" press "AI usage"
+sleep 1
+# The refusal's word is said for a few seconds and then goes, and the footer
+# is measured below without it.
+gone=no
+for _ in $(seq 1 150); do
+    ax
+    [ "$(has "Could not change the order")" = no ] && { gone=yes; break; }
+    sleep 0.1
+done
+check "the refusal's word goes away by itself" yes "$gone"
+
+say ""
 say "under the list, and on the floor"
 order=$(awk -v ws="$HOME_WS" '$0 ~ "^" ws && !w { w = NR } /^AI usage/ && !f { f = NR } END { print (w && f && w < f) ? "yes" : "no" }' "$WORK/ax.txt")
 check "the footer comes after the workspaces" yes "$order"
 read -r before bottom <<<"$("$AXPOS" "$APP_NAME" "AI usage")"
 for i in $(seq 1 30); do "$KEEP" new "Space$i" >/dev/null 2>&1; done
 sleep 4
-read -r after bottom_after <<<"$("$AXPOS" "$APP_NAME" "AI usage")"
+# The app can still be busy with thirty new rows, and a question put to it
+# meanwhile goes unanswered: asked again for a few seconds.
+after=""
+for _ in 1 2 3 4 5; do
+    read -r after bottom_after <<<"$("$AXPOS" "$APP_NAME" "AI usage")"
+    [ -n "$after" ] && break
+    sleep 1
+done
 check "thirty more workspaces do not move it" "$before" "$after"
 check "and it is still in the window" yes "$([ "$after" -gt 0 ] && [ "$after" -lt "$bottom_after" ] && echo yes || echo no)"
+
+say ""
+say "without keep-ia, the footer as it was"
+stop_app
+: >"$WORK/app-without-helper.log"
+KEEP_IA_BIN=/var/empty KEEP_TRACE=1 "$BIN" >"$WORK/app-without-helper.log" 2>&1 &
+APP_PID=$!
+waited=0
+while [ "$(grep -ac '^.*usage ' "$WORK/app-without-helper.log")" -lt 3 ] && [ "$waited" -lt 120 ]; do
+    sleep 0.25; waited=$((waited + 1))
+done
+place_on_screen
+sleep 2
+ax
+check "the accounts are there" yes "$(has "Claude · main")"
+check "with no place in an order" no "$(has "1 · Claude")"
+check "no arrows" no "$(has "Move Claude")"
+check "and no way to sign in" no "$(has "Sign in to another account")"
 
 say ""
 say "$PASSED passed, $FAILED failed"

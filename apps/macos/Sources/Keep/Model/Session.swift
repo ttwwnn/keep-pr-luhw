@@ -16,6 +16,8 @@ protocol SessionRendering: AnyObject {
     /// Ask before ending something, on this window; `then` runs only on yes.
     /// A no puts the keyboard back where it was.
     func confirm(_ question: Confirmation, then: @escaping () -> Void)
+    /// Say that something asked for could not be done, and why.
+    func present(problem: String, detail: String)
 }
 
 /// A question worth a yes before work ends: closing a tab, a pane or a
@@ -51,6 +53,9 @@ final class Session {
     private var claudeActivities: [TabID: ClaudeActivity] = [:]
     /// When each tab's Claude Code started waiting on an answer.
     private var waitingSince: [TabID: Date] = [:]
+    /// Windows a login is being opened from: a second click meanwhile is
+    /// dropped rather than opening a second login.
+    private var signingIn: Set<WindowID> = []
 
     /// What each window is pointed at, and who to hand its snapshot to.
     ///
@@ -1005,6 +1010,9 @@ final class Session {
                 break
             }
 
+        case .signIn(let engine):
+            signIn(engine, from: window)
+
         case .dismissPickerItem(let id):
             guard let item = views[window]?.picker?.items.first(where: { $0.id == id }),
                   case .running(let tab) = item.kind
@@ -1016,6 +1024,38 @@ final class Session {
                 action: "Close Tab"
             ), about: "this tab", from: window) { [weak self] in
                 self?.dismiss(tab: tab, from: window) ?? false
+            }
+        }
+    }
+
+    // MARK: - signing in to another account
+
+    /// Ask `keep-ia` for a login to another account, in a new tab of this
+    /// window's workspace, and go to that tab when it is there.
+    private func signIn(_ engine: AIEngine, from window: WindowID) {
+        guard !signingIn.contains(window),
+              let service = AIHelper.Service(rawValue: engine.orderPrefix)
+        else { return }
+        let workspace = views[window]?.workspace ?? views[window]?.workspaces.first ?? NSUserName()
+        signingIn.insert(window)
+        Trace.log("ia", "sign in to \(service.rawValue) in \(workspace)")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let answer = AIHelper.signIn(service, workspace: workspace)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.signingIn.remove(window)
+                switch answer {
+                case .success(let opened):
+                    Trace.log("ia", "login in \(opened.workspace)/\(opened.tab)")
+                    self.refreshFromDaemon()
+                    self.activate(TabID(workspace: opened.workspace, root: opened.tab), in: window)
+                    self.publish()
+                    self.renderer(window)?.focusActiveTerminal()
+                case .failure(let problem):
+                    Trace.log("ia", "no login (\(problem.reason ?? "?")): \(problem.detail)")
+                    self.renderer(window)?.present(
+                        problem: "Could not open the sign-in", detail: problem.detail)
+                }
             }
         }
     }

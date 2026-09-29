@@ -447,6 +447,9 @@ enum Intent {
     /// every tab — so it is set on `GhosttyApp` directly and only the closing
     /// of the overlay comes back through here.
     case togglePalette(PickerModel.Catalog)
+    /// Sign in to another account of a service, in a new tab of this
+    /// window's workspace — the usage footer's "+".
+    case signIn(AIEngine)
 }
 
 /// Everything the palette can run.

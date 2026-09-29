@@ -58,7 +58,8 @@ require_scratch_socket() {
 restore_app() {
     local bundle=$1
     ( unset KEEP_SOCKET KEEP_TRACE KEEP_STATE_DIR KEEP_APP_NAME \
-        KEEP_AI_USAGE_HOME KEEP_AI_USAGE_CLAUDE_URL KEEP_AI_USAGE_CODEX_URL
+        KEEP_AI_USAGE_HOME KEEP_AI_USAGE_CLAUDE_URL KEEP_AI_USAGE_CODEX_URL \
+        KEEP_IA_BIN
       open "$bundle" >/dev/null 2>&1 ) &
 }
 
@@ -67,6 +68,17 @@ restore_app() {
 # opens KeepDev would otherwise do that on each launch. An empty place to look
 # in; the footer's own test points it at a made-up home instead.
 export KEEP_AI_USAGE_HOME="${KEEP_AI_USAGE_HOME:-/var/empty}"
+
+# Nor does it ask `keep-ia`, the helper that keeps the order of the AI
+# accounts and makes their logins, to change anything. With it installed, a
+# build would offer arrows in the footer and a "+", each a way for a test to
+# reach the real vault. `KEEP_IA_BIN` set is the only helper the app looks
+# at, and an empty directory is none; the footer's test points it at a
+# stand-in of its own.
+# And an app reading a made-up home, as above, never asks the installed
+# helper, even without `KEEP_IA_BIN` (Daemon/ExternalHelper.swift): that one
+# acts on the real home.
+export KEEP_IA_BIN="${KEEP_IA_BIN:-/var/empty}"
 
 # Put the client and daemon that were just built inside the app bundle.
 #

@@ -512,4 +512,18 @@ extension MainWindowController {
         guard window.attachedSheet == nil else { return }
         alert.beginSheetModal(for: window, completionHandler: answer)
     }
+
+    /// Something asked for could not be done: a sheet saying what and why,
+    /// on this window only.
+    func present(problem: String, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = problem
+        alert.informativeText = detail
+        guard let window else {
+            alert.runModal()
+            return
+        }
+        guard window.attachedSheet == nil else { return }
+        alert.beginSheetModal(for: window, completionHandler: nil)
+    }
 }

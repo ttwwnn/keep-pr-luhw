@@ -1,12 +1,31 @@
 import Foundation
-// The model test of AIUsage.swift (the usage footer's facts), run by
-// tools/usage-test.sh. Foundation only: no app, no network, no real logins.
+// The model test of AIUsage.swift (the usage footer's facts and the order of
+// priority) and of the `keep-ia` half of Daemon/ExternalHelper.swift, run by
+// tools/usage-test.sh. Foundation only: no app, no network, no real logins,
+// no real helper.
+
+// The two app types ExternalHelper.swift reaches for, stubbed.
+enum Trace { static func log(_ kind: String, _ detail: @autoclosure () -> String) {} }
+enum Daemon { static var socketPath: String { "/tmp/test-socket-usage" } }
 
 var failures = 0
 var cases = 0
 func check(_ ok: Bool, _ name: String, _ detail: @autoclosure () -> String = "") {
     cases += 1
     if ok { print("ok    \(name)") } else { failures += 1; print("FAIL  \(name) \(detail())") }
+}
+
+// Run under a made-up HOME (tools/usage-test.sh), where the installed helper
+// is a canary: nothing here may reach the real ~/.local/bin/keep-ia and the
+// real accounts it acts on, not even with the code under test broken on
+// purpose. Refused outright otherwise.
+let testEnvironment = ProcessInfo.processInfo.environment
+guard let testHome = testEnvironment["HOME"], testHome != NSHomeDirectory(),
+      AIHelper.installedPath(environment: testEnvironment) == testHome + "/.local/bin/keep-ia"
+else {
+    print("FAIL  refusing to run: HOME must be a made-up home, and the installed helper looked for in it"
+          + " (\(AIHelper.installedPath(environment: testEnvironment)))")
+    exit(2)
 }
 
 // --- answers in the services' real shape, with no secrets in them
@@ -168,6 +187,212 @@ check(UsageText.moment(cal.date(byAdding: .hour, value: 3, to: noon)!, now: noon
 check(UsageText.moment(cal.date(byAdding: .hour, value: 19, to: noon)!, now: noon, calendar: cal) == "tomorrow at 07:00", "moment: tomorrow")
 check(UsageText.moment(cal.date(byAdding: .day, value: 2, to: noon)!, now: noon, calendar: cal) == "on Sep 28 at 12:00", "moment: a date", UsageText.moment(cal.date(byAdding: .day, value: 2, to: noon)!, now: noon, calendar: cal))
 check(UsageText.ago(t0.addingTimeInterval(-30), now: t0) == "just now" && UsageText.ago(t0.addingTimeInterval(-23 * 60), now: t0) == "23 min ago", "how long ago")
+
+// --- the order of priority (.ordem)
+// No order written: the order of old (the preferred one, then by name;
+// Claude before GPT), each account with the key it goes by.
+let noOrder = AIAccounts.discover(home: home)
+check(noOrder.map(\.summary.order) == ["claude:spare", "claude:work", "gpt:principal"],
+      "no order written: the order of old, each with its key", "\(noOrder.map(\.summary.order))")
+check(noOrder.last?.alias == "main" && noOrder.last?.summary.order == "gpt:principal",
+      "Codex's own login: shown as main, known to the helper as principal",
+      "\(String(describing: noOrder.last?.summary))")
+let orderFile = vault.appendingPathComponent(".ordem")
+func order(_ text: String) { try! text.write(to: orderFile, atomically: true, encoding: .utf8) }
+// Across services, a comment and a blank line, a key said twice, a key with
+// no account.
+order("# priority\n\ngpt:principal\nclaude:gone\nclaude:main\ngpt:principal\n")
+let withOrder = AIAccounts.discover(home: home)
+check(withOrder.map(\.alias) == ["main", "work", "spare"] && withOrder.map(\.engine) == [.codex, .claude, .claude],
+      "order: GPT first, the merged account at one of its slots' places, the unnamed one last",
+      "\(withOrder.map { "\($0.engine.orderPrefix):\($0.alias)" })")
+let merged = withOrder.first { $0.key == "U1" }
+check(merged?.orderKey == "claude:main", "merged: its key is the listed slot's", "\(String(describing: merged?.orderKey))")
+check(withOrder.last?.orderKey == "claude:spare", "unnamed: its key is the slot it is shown under")
+// A merged account sits at the EARLIER of its slots' places.
+order("claude:spare\nclaude:main\ngpt:principal\nclaude:work\n")
+let earlier = AIAccounts.discover(home: home)
+check(earlier.map(\.summary.order) == ["claude:spare", "claude:main", "gpt:principal"],
+      "merged: the earlier of its slots' places counts", "\(earlier.map(\.summary.order))")
+order("claude:work\ngpt:principal\nclaude:main\n")
+let earlier2 = AIAccounts.discover(home: home)
+check(earlier2.first?.orderKey == "claude:work" && earlier2.first?.alias == "work",
+      "merged: its key is the slot at the earlier place", "\(earlier2.map(\.summary.order))")
+check(AIOrder.read(URL(fileURLWithPath: "/does/not/exist")).isEmpty, "no order file: nothing listed")
+try? fm.removeItem(at: orderFile)
+
+// --- other GPT logins (.codex-contas/<name>/auth.json)
+let extras = home.appendingPathComponent(".codex-contas")
+func extra(_ name: String, email: String, account: String) {
+    let folder = extras.appendingPathComponent(name)
+    try! fm.createDirectory(at: folder, withIntermediateDirectories: true)
+    let token = "h." + b64url(["exp": exp, "https://api.openai.com/profile": ["email": email],
+                               "https://api.openai.com/auth": ["chatgpt_plan_type": "plus", "chatgpt_account_id": account]]) + ".s"
+    try! JSONSerialization.data(withJSONObject: ["tokens": ["access_token": token, "account_id": account]])
+        .write(to: folder.appendingPathComponent("auth.json"))
+}
+extra("team", email: "t@example.com", account: "ACC-T")
+extra("alt", email: "alt@example.com", account: "ACC-A")
+extra("copy", email: "c@example.com", account: "ACC")          // the main login again
+try! fm.createDirectory(at: extras.appendingPathComponent(".hidden"), withIntermediateDirectories: true)
+try! fm.createDirectory(at: extras.appendingPathComponent("empty"), withIntermediateDirectories: true)
+let gpts = AIAccounts.codexAccounts(home: home)
+check(gpts.map(\.alias) == ["main", "alt", "team"],
+      "GPT: the main login, then the others by name; a copy merges; a dotted or empty folder is left out",
+      "\(gpts.map(\.alias))")
+check(gpts.first?.aliases == ["main", "copy"] && gpts.first?.summary.slotNames == ["principal", "copy"],
+      "GPT: a copy of the main login is the main one, known by both names",
+      "\(String(describing: gpts.first?.aliases)) \(String(describing: gpts.first?.summary.slotNames))")
+check(gpts.first?.isActive == true && gpts.dropFirst().allSatisfy { !$0.isActive }, "GPT: only the main one is in use")
+let team = gpts.first { $0.alias == "team" }
+check(team?.email == "t@example.com" && team?.accountHeader == "ACC-T" && team?.summary.order == "gpt:team",
+      "another GPT login: its address, its workspace and the key gpt:<name>", "\(String(describing: team?.summary))")
+let everything = AIAccounts.discover(home: home)
+check(everything.map(\.summary.order) == ["claude:spare", "claude:work", "gpt:principal", "gpt:alt", "gpt:team"],
+      "discovery: Claude, then GPT's main login and the others", "\(everything.map(\.summary.order))")
+check(everything.first { $0.alias == "main" && $0.engine == .codex }?.summary.keys == ["gpt:principal", "gpt:copy"],
+      "an account's keys: one for each slot")
+
+// --- the files' signature (the two-second glance)
+let signature0 = AIAccounts.signature(home: home)
+check(signature0 == AIAccounts.signature(home: home), "signature: the same when nothing changes")
+Thread.sleep(forTimeInterval: 0.01)
+order("gpt:team\n")
+let signature1 = AIAccounts.signature(home: home)
+check(signature1 != signature0, "signature: changes with the order")
+extra("fresh", email: "f@example.com", account: "ACC-F")
+check(AIAccounts.signature(home: home) != signature1, "signature: changes with a new GPT login")
+let beforeHidden = AIAccounts.signature(home: home)
+try! "{}".write(to: vault.appendingPathComponent(".hidden.json"), atomically: true, encoding: .utf8)
+check(AIAccounts.signature(home: home) == beforeHidden, "signature: a hidden file in the vault does not count")
+try? fm.removeItem(at: orderFile)
+
+// --- whether an account can take work
+func summary(_ engine: AIEngine, _ name: String, active: Bool = false, warning: String? = nil,
+             names: [String]? = nil, email: String? = nil, slots: [String]? = nil) -> AIAccountSummary {
+    AIAccountSummary(engine: engine, key: "\(engine.orderPrefix)-\(name)", alias: name, aliases: names ?? [name],
+                     email: email ?? "\(name)@example.com", plan: nil, isActive: active, isPreferred: false,
+                     warning: warning, slots: slots)
+}
+func usage(_ account: AIAccountSummary, _ windows: [(String, Double)] = [], limit: Bool = false,
+           read: Bool = true) -> AccountUsage {
+    AccountUsage(account: account, reading: read ? UsageReading(
+        windows: windows.map { UsageWindow(label: $0.0, title: $0.0, percent: $0.1, resetsAt: nil) },
+        limitReached: limit) : nil)
+}
+check(usage(summary(.claude, "a"), read: false).isAvailable, "available: not measured yet")
+check(usage(summary(.claude, "a"), [("5h", 94.9), ("7d", 50), ("Fable", 100)]).isAvailable,
+      "available: 5h and 7d under 95 (a per-model window does not count)")
+check(!usage(summary(.claude, "a"), [("5h", 95)]).isAvailable, "not available: 5h at 95%")
+check(!usage(summary(.codex, "a"), [("7d", 99)]).isAvailable, "not available: 7d at 99%")
+check(!usage(summary(.claude, "a"), [("5h", 10)], limit: true).isAvailable, "not available: at the limit")
+check(!usage(summary(.claude, "a", warning: "login refused"), read: false).isAvailable,
+      "not available: something wrong with the login")
+
+// --- keep-ia, against the stand-in that logs what it is asked
+let state = home.appendingPathComponent("state")
+try! fm.createDirectory(at: state, withIntermediateDirectories: true)
+let fake = ProcessInfo.processInfo.environment["FAKE_IA"]!
+let fakeDir = ProcessInfo.processInfo.environment["FAKE_IA_DIR"]!
+func helperCalls() -> [[String]] {
+    ((try? String(contentsOfFile: fakeDir + "/calls.jsonl", encoding: .utf8)) ?? "").split(separator: "\n")
+        .compactMap { (try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])?["argv"] as? [String] }
+}
+func forgetHelperCalls() { try? fm.removeItem(atPath: fakeDir + "/calls.jsonl") }
+check(AIHelper.path(environment: ["KEEP_IA_BIN": "/does/not/exist"], installed: fake) == nil,
+      "helper: KEEP_IA_BIN at nothing is none, with no falling through to the installed one")
+check(AIHelper.path(environment: ["KEEP_IA_BIN": "/var/empty"], installed: fake) == nil, "helper: KEEP_IA_BIN at a directory is none")
+check(AIHelper.path(environment: ["KEEP_IA_BIN": fake], installed: "/does/not/exist") == fake, "helper: KEEP_IA_BIN at an executable is that one")
+check(AIHelper.path(environment: [:], installed: fake) == fake, "helper: without KEEP_IA_BIN, the installed one")
+check(AIHelper.path(environment: [:], installed: "/does/not/exist") == nil, "helper: with neither, none")
+check(AIHelper.path(environment: [:], installed: fakeDir) == nil, "helper: an installed one that is a directory does not count")
+check(AIHelper.path(environment: ["KEEP_AI_USAGE_HOME": "/x"], installed: fake) == nil,
+      "helper: an app reading a made-up home does not ask the installed one, which acts on the real home")
+check(AIHelper.path(environment: ["KEEP_AI_USAGE_HOME": "/x", "KEEP_IA_BIN": fake], installed: "/does/not/exist") == fake,
+      "helper: a made-up home with KEEP_IA_BIN, that one")
+check(AIHelper.installedPath(environment: ["HOME": "/x/y"]) == "/x/y/.local/bin/keep-ia",
+      "helper: the installed one is looked for under HOME")
+check(AIHelper.installedPath(environment: ["HOME": ""]) == NSHomeDirectory() + "/.local/bin/keep-ia"
+      && AIHelper.installedPath(environment: [:]) == NSHomeDirectory() + "/.local/bin/keep-ia",
+      "helper: with no HOME, the user's home")
+check(AIHelper.isValidKey("claude:spare") && AIHelper.isValidKey("gpt:principal") && AIHelper.isValidKey(AIHelper.followOrder),
+      "keys: the valid shapes")
+for bad in ["claude:", "gpt:a b", "claude:a/b", "claude:a:b", "--para=x", "other:x", "claude:x\n"] {
+    check(!AIHelper.isValidKey(bad), "key refused: \(bad.debugDescription)")
+}
+setenv("KEEP_IA_BIN", fake, 1)
+// The stand-in reads the made-up home.
+setenv("KEEP_AI_USAGE_HOME", home.path, 1)
+setenv("KIT_KEEP_ESTADO", state.path, 1)
+forgetHelperCalls()
+if case .success(let moved) = AIHelper.moveOrder("claude:work", up: false) {
+    check(moved.first == "claude:spare", "move: the answer is the new order", "\(moved)")
+} else { check(false, "move: ok") }
+check(helperCalls().last == ["ordem", "mover", "claude:work", "baixo", "--json"], "move: the arguments", "\(helperCalls())")
+forgetHelperCalls()
+if case .failure(let p) = AIHelper.moveOrder("claude:a b", up: true) {
+    check(p.reason == "invalid-key" && helperCalls().isEmpty, "move: a bad key never reaches the helper")
+} else { check(false, "move: a bad key") }
+if case .failure = AIHelper.moveOrder(AIHelper.followOrder, up: true) {
+    check(helperCalls().isEmpty, "move: claude:ordem is not an account in the order")
+} else { check(false, "move: claude:ordem") }
+forgetHelperCalls()
+if case .success(let done) = AIHelper.switchAccount(workspace: "-odd ws", tab: 7, to: "gpt:team", interrupt: false) {
+    check(done.contains("gpt:team"), "switch: ok, with what was done", done)
+} else { check(false, "switch: ok") }
+check(helperCalls().last == ["trocar", "--ws=-odd ws", "--aba=7", "--para=gpt:team", "--json"],
+      "switch: values inside their options, a workspace with a dash and a space", "\(helperCalls())")
+try! "".write(toFile: fakeDir + "/busy", atomically: true, encoding: .utf8)
+if case .failure(let p) = AIHelper.switchAccount(workspace: "w", tab: 2, to: "claude:spare", interrupt: false) {
+    check(p.reason == "ocupada" && p.detail == "The tab is in the middle of an answer.",
+          "switch: a busy tab comes back with the helper's reason and words", "\(p)")
+} else { check(false, "switch: busy") }
+if case .success = AIHelper.switchAccount(workspace: "w", tab: 2, to: "claude:spare", interrupt: true) {
+    check(helperCalls().last == ["trocar", "--ws=w", "--aba=2", "--para=claude:spare", "--interromper", "--json"],
+          "switch: --interromper", "\(helperCalls())")
+} else { check(false, "switch: interrupting") }
+try? fm.removeItem(atPath: fakeDir + "/busy")
+forgetHelperCalls()
+if case .failure(let p) = AIHelper.switchAccount(workspace: "w", tab: 2, to: "claude:x/y", interrupt: false) {
+    check(p.reason == "invalid-key" && helperCalls().isEmpty, "switch: a bad key refused before anything runs")
+} else { check(false, "switch: a bad key") }
+// Signing in: the stand-in opens the tab with the client it is given, here
+// one that only says its number.
+let fakeClient = fakeDir + "/fake-keep.sh"
+try! "#!/bin/sh\necho \"$2: opened tab 7\"\n".write(toFile: fakeClient, atomically: true, encoding: .utf8)
+chmod(fakeClient, 0o755)
+setenv("FAKE_IA_KEEP", fakeClient, 1)
+if case .success(let opened) = AIHelper.signIn(.gpt, workspace: "home") {
+    check(opened.workspace == "home" && opened.tab == 7, "sign in: the workspace and the tab", "\(opened)")
+} else { check(false, "sign in: ok") }
+check(helperCalls().last == ["entrar", "gpt", "--ws=home", "--json"], "sign in: the arguments", "\(helperCalls())")
+check(fm.fileExists(atPath: home.appendingPathComponent(".codex-contas/new/auth.json").path),
+      "sign in (stand-in): the new login is on disk")
+// The deadline: a helper too slow is stopped at it.
+AIHelper.timeScale = 0.2
+try! "5".write(toFile: fakeDir + "/slow", atomically: true, encoding: .utf8)
+let t1 = Date()
+if case .failure(let p) = AIHelper.moveOrder("claude:spare", up: true) {
+    check(Date().timeIntervalSince(t1) < 4 && p.detail.contains("took longer than 2 s"),
+          "deadline: a slow helper is cut off after ~2 s", p.detail)
+} else { check(false, "deadline: should have failed") }
+try? fm.removeItem(atPath: fakeDir + "/slow")
+AIHelper.timeScale = 1
+// An answer that is not the helper's kind.
+let broken = fakeDir + "/broken.sh"
+try! "#!/bin/sh\necho 'not json'\nexit 1\n".write(toFile: broken, atomically: true, encoding: .utf8)
+chmod(broken, 0o755)
+setenv("KEEP_IA_BIN", broken, 1)
+if case .failure(let p) = AIHelper.switchAccount(workspace: "w", tab: 1, to: "claude:spare", interrupt: false) {
+    check(p.reason == "unreadable" && p.detail.contains("Unreadable answer from keep-ia"), "an unreadable answer: said", p.detail)
+} else { check(false, "an unreadable answer") }
+setenv("KEEP_IA_BIN", "/does/not/exist", 1)
+if case .failure(let p) = AIHelper.moveOrder("claude:spare", up: true) {
+    check(p.reason == "no-helper", "no helper: nothing runs")
+} else { check(false, "no helper") }
+check(!fm.fileExists(atPath: fakeDir + "/installed-helper-called"),
+      "the installed helper, the made-up HOME's canary, was never asked",
+      (try? String(contentsOfFile: fakeDir + "/installed-helper-called", encoding: .utf8)) ?? "")
 
 try? fm.removeItem(at: home)
 print("\(cases - failures)/\(cases) ok")

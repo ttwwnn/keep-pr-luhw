@@ -299,55 +299,16 @@ enum Worktrees {
         (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
-    /// Run the helper and hand back what it printed, or why there is nothing.
-    ///
-    /// Told which daemon the app is using, since a test app runs against one
-    /// of its own. Killed when it outlives `within`: a question held open by
-    /// a hung helper would be a close button that does nothing.
+    /// Run the helper and hand back what it printed, or why there is nothing
+    /// (`ExternalHelper`): anything but a clean exit is a failure here.
     static func run(_ helper: String, _ arguments: [String], within seconds: TimeInterval)
         -> Result<Data, RunFailure>
     {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: helper)
-        process.arguments = arguments
-        var environment = ProcessInfo.processInfo.environment
-        environment["KEEP_SOCKET"] = Daemon.socketPath
-        process.environment = environment
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-
-        let finished = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in finished.signal() }
-        do {
-            try process.run()
-        } catch {
-            return .failure(RunFailure("keep-worktrees did not start: \(error.localizedDescription)"))
+        ExternalHelper.run(helper, arguments, within: seconds, name: "keep-worktrees").flatMap {
+            $0.status == 0 ? .success($0.data) : .failure(RunFailure("keep-worktrees exited with \($0.status)"))
         }
-        // Read while it runs, so a large answer cannot fill the pipe and
-        // stall the process that is writing it.
-        var data = Data()
-        let reading = DispatchGroup()
-        reading.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            data = output.fileHandleForReading.readDataToEndOfFile()
-            reading.leave()
-        }
-        guard finished.wait(timeout: .now() + seconds) == .success else {
-            process.terminate()
-            _ = finished.wait(timeout: .now() + 1)
-            return .failure(RunFailure("keep-worktrees took longer than \(Int(seconds)) s"))
-        }
-        _ = reading.wait(timeout: .now() + 2)
-        guard process.terminationStatus == 0 else {
-            return .failure(RunFailure("keep-worktrees exited with \(process.terminationStatus)"))
-        }
-        return .success(data)
     }
 
-    struct RunFailure: Error, CustomStringConvertible {
-        let description: String
-        init(_ description: String) { self.description = description }
-    }
+    typealias RunFailure = ExternalHelper.Failure
 }
 
