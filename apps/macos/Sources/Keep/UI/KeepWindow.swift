@@ -513,6 +513,33 @@ extension MainWindowController {
         alert.beginSheetModal(for: window, completionHandler: answer)
     }
 
+    /// The same sheet, for going on with something that was refused as it
+    /// stood: the way on is the first button, and "Cancel" answers Escape.
+    /// Dropped when a sheet is up already, as a question is.
+    func ask(_ question: Confirmation, then: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = question.title
+        alert.informativeText = question.detail
+        alert.alertStyle = .warning
+        // What it goes on to do stops something under way, and says so.
+        alert.addButton(withTitle: question.action).hasDestructiveAction = true
+        let cancel = alert.addButton(withTitle: "Cancel")
+        cancel.keyEquivalent = "\u{1b}"
+        let answer: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            if response == .alertFirstButtonReturn {
+                then()
+            } else {
+                self?.focusActiveTerminal()
+            }
+        }
+        guard let window else {
+            answer(alert.runModal())
+            return
+        }
+        guard window.attachedSheet == nil else { return }
+        alert.beginSheetModal(for: window, completionHandler: answer)
+    }
+
     /// Something asked for could not be done: a sheet saying what and why,
     /// on this window only.
     func present(problem: String, detail: String) {

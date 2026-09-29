@@ -36,6 +36,7 @@
 		EB832312EF01355D4678683C /* GhosttyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 135A8576CC41EE22386C8C4D /* GhosttyApp.swift */; };
 		F320A7F6CECB057B2CB6333F /* Snapshots.swift in Sources */ = {isa = PBXBuildFile; fileRef = 409F4278222CDF7A60BB0BC8 /* Snapshots.swift */; };
 		A1C0FFEE0000000000000001 /* AIUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0FFEE0000000000000002 /* AIUsage.swift */; };
+		C3E0FFEE0000000000000001 /* AIChoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E0FFEE0000000000000002 /* AIChoice.swift */; };
 		C3E0FFEE0000000000000003 /* ExternalHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E0FFEE0000000000000004 /* ExternalHelper.swift */; };
 		C3E0FFEE0000000000000005 /* AccountMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E0FFEE0000000000000006 /* AccountMenu.swift */; };
 		FCEBE0A215CA639F0322FF20 /* PickerActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D71D0DA44EC6DD5C261D1F8A /* PickerActions.swift */; };
@@ -60,6 +61,7 @@
 		3ADE1AE5D8DAF64D7C40B063 /* Glass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Glass.swift; sourceTree = "<group>"; };
 		409F4278222CDF7A60BB0BC8 /* Snapshots.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Snapshots.swift; sourceTree = "<group>"; };
 		A1C0FFEE0000000000000002 /* AIUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIUsage.swift; sourceTree = "<group>"; };
+		C3E0FFEE0000000000000002 /* AIChoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIChoice.swift; sourceTree = "<group>"; };
 		C3E0FFEE0000000000000004 /* ExternalHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalHelper.swift; sourceTree = "<group>"; };
 		C3E0FFEE0000000000000006 /* AccountMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountMenu.swift; sourceTree = "<group>"; };
 		455B3F87550E85E26FFD249F /* WorkspaceEntity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceEntity.swift; sourceTree = "<group>"; };
@@ -132,6 +134,7 @@
 				B52FB855ABF4E5D3B625D009 /* SidebarStateStore.swift */,
 				409F4278222CDF7A60BB0BC8 /* Snapshots.swift */,
 				A1C0FFEE0000000000000002 /* AIUsage.swift */,
+				C3E0FFEE0000000000000002 /* AIChoice.swift */,
 				5461D3D1159F36613F895FA2 /* TabEntity.swift */,
 				1621ED87636A9ED661051FFE /* TerminalPrefs.swift */,
 				455B3F87550E85E26FFD249F /* WorkspaceEntity.swift */,
@@ -271,6 +274,7 @@
 				D10C70635824F4B9A739338F /* SidebarStateStore.swift in Sources */,
 				F320A7F6CECB057B2CB6333F /* Snapshots.swift in Sources */,
 				A1C0FFEE0000000000000001 /* AIUsage.swift in Sources */,
+				C3E0FFEE0000000000000001 /* AIChoice.swift in Sources */,
 				C3E0FFEE0000000000000003 /* ExternalHelper.swift in Sources */,
 				C3E0FFEE0000000000000005 /* AccountMenu.swift in Sources */,
 				E8B4A1D30F5C6B7A89D2E3F4 /* DroppedFiles.swift in Sources */,

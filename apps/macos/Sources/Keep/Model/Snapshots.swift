@@ -447,6 +447,10 @@ enum Intent {
     /// every tab — so it is set on `GhosttyApp` directly and only the closing
     /// of the overlay comes back through here.
     case togglePalette(PickerModel.Catalog)
+    /// Put a tab's AI on another account — the chevron beside its title.
+    /// `key` is what `keep-ia` is asked for (`claude:ordem`,
+    /// `claude:<slot>`, `gpt:<name>`); `label` is what the menu called it.
+    case chooseAccount(TabID, key: String, label: String)
     /// Sign in to another account of a service, in a new tab of this
     /// window's workspace — the usage footer's "+".
     case signIn(AIEngine)
@@ -765,6 +769,13 @@ struct SessionSnapshot: Hashable {
         let claudeActivity: ClaudeActivity?
         /// When it started waiting on you, if it is: see `Attention`.
         let wantsYouSince: Date?
+        /// The account its AI runs on, as `keep-ia` wrote it down
+        /// (`AITabAccounts`): `claude:ordem`, `claude:<slot>`, `gpt:<name>`.
+        /// Nil when no AI runs there.
+        let account: String?
+        /// Whether its AI and account can be chosen from here: `keep-ia`,
+        /// the helper outside the app, is installed.
+        let offersAccounts: Bool
     }
 
     struct StripItem: Hashable, Identifiable {
@@ -782,6 +793,12 @@ struct SessionSnapshot: Hashable {
         let claudeMode: ClaudeMode?
         let claudeActivity: ClaudeActivity?
         let wantsYouSince: Date?
+        /// What is running in there, the account its AI is on, and whether
+        /// that can be chosen: as on the sidebar's row, for the chevron's
+        /// menu.
+        let command: String
+        let account: String?
+        let offersAccounts: Bool
     }
 
     struct ActiveTab: Hashable {

@@ -1,6 +1,7 @@
 import Foundation
 // The model test of AIUsage.swift (the usage footer's facts and the order of
-// priority) and of the `keep-ia` half of Daemon/ExternalHelper.swift, run by
+// priority), AIChoice.swift (which account each tab is on, and the menu that
+// changes it) and the `keep-ia` half of Daemon/ExternalHelper.swift, run by
 // tools/usage-test.sh. Foundation only: no app, no network, no real logins,
 // no real helper.
 
@@ -289,9 +290,135 @@ check(!usage(summary(.claude, "a"), [("5h", 10)], limit: true).isAvailable, "not
 check(!usage(summary(.claude, "a", warning: "login refused"), read: false).isAvailable,
       "not available: something wrong with the login")
 
-// --- keep-ia, against the stand-in that logs what it is asked
+// --- a tab's AI menu (AIChoices)
+let full = usage(summary(.claude, "full", email: "full@example.com"), [("5h", 97), ("7d", 20)])
+let gptMain = usage(summary(.codex, "main", active: true, email: "g@example.com", slots: [AIAccounts.codexOwnSlot]),
+                    [("7d", 3)])
+let inUse = usage(summary(.claude, "main", active: true, names: ["main", "work"], email: "main@example.com"),
+                  [("5h", 10), ("7d", 10)])
+let refused = usage(summary(.claude, "spare", warning: "login refused: sign in again", email: "spare@example.com"),
+                    read: false)
+let queue = [full, gptMain, inUse, refused]
+let claudeRows = AIChoices.rows(lines: queue, current: "claude:spare", program: .claude)
+check(claudeRows.map(\.kind) == [.follow, .separator, .account, .account, .account, .account],
+      "menu: following the order, a separator, a line per account in the order")
+check(claudeRows.map(\.title) == [AIChoices.followTitle, "", "Claude · full · full@example.com — at the limit",
+                                  "GPT · main · g@example.com", "Claude · main · main@example.com",
+                                  "Claude · spare · spare@example.com — login refused: sign in again"],
+      "menu: the titles, with 'at the limit' or the warning", "\(claudeRows.map(\.title))")
+check(claudeRows.map(\.mark) == [.none, .none, .none, .none, .none, .on], "menu: ✓ on the tab's account", "\(claudeRows.map(\.mark))")
+check(claudeRows.allSatisfy { $0.kind == .separator || $0.enabled }, "menu: everything enabled for Claude")
+check(claudeRows.map(\.key) == ["gpt:principal", nil, "claude:full", "gpt:principal", "claude:main", "claude:spare"],
+      "menu: the keys; following the order goes to the first account available (GPT), Codex's own login by its slot",
+      "\(claudeRows.map(\.key))")
+check(claudeRows.first?.help == "Now: GPT · main", "menu: following's help names the account it is on now",
+      "\(String(describing: claudeRows.first?.help))")
+check(claudeRows.map(\.label) == ["the order of priority", "", "Claude · full", "GPT · main", "Claude · main", "Claude · spare"],
+      "menu: each choice has the short name it is spoken of by afterwards", "\(claudeRows.map(\.label))")
+let byOtherName = AIChoices.rows(lines: queue, current: "claude:work", program: .claude)
+check(byOtherName[4].mark == .on, "menu: ✓ by any of the account's names")
+let following = AIChoices.rows(lines: queue, current: AIHelper.followOrder, program: .claude)
+check(following[0].mark == .on && following[4].mark == .mixed && following.filter { $0.mark == .mixed }.count == 1,
+      "menu: ✓ on following, and a dash on the Claude account in use", "\(following.map(\.mark))")
+let onCodex = AIChoices.rows(lines: queue, current: "gpt:principal", program: .codex)
+check(onCodex.map(\.mark) == [.none, .none, .none, .on, .none, .none], "menu: ✓ on Codex's own login, known by its slot",
+      "\(onCodex.map(\.mark))")
+let other = AIChoices.rows(lines: queue, current: nil, program: AIProgramKind(command: "sleep"))
+check(other.first?.title == "This tab is running sleep" && other.first?.kind == .note, "another program: a line that says which")
+check(other.allSatisfy { !$0.enabled }, "another program: nothing enabled")
+let atShell = AIChoices.rows(lines: queue, current: nil, program: .shell)
+check(atShell.allSatisfy { $0.kind == .separator || $0.enabled } && atShell.allSatisfy { $0.mark == .none },
+      "a shell: everything enabled, nothing marked")
+check(AIChoices.followOrderKey([inUse, gptMain]) == AIHelper.followOrder, "following: the first available is Claude → claude:ordem")
+check(AIChoices.followOrderKey([full, inUse, gptMain]) == AIHelper.followOrder, "following: past the full one, to the next Claude")
+check(AIChoices.followOrderKey([full, gptMain]) == "gpt:principal", "following: the first available is GPT → gpt:<slot>")
+check(AIChoices.followOrderKey([full, refused]) == AIHelper.followOrder, "following: none available → the first in the order")
+check(AIChoices.followOrderKey([]) == AIHelper.followOrder, "following: no accounts → claude:ordem")
+check(AIChoices.rows(lines: [], current: nil, program: .claude).map(\.kind) == [.follow], "no accounts: only following the order")
+check(AIChoices.programLabel(command: "claude", account: "claude:spare") == "claude · spare",
+      "sidebar: claude · <name> on an account of its own")
+check(AIChoices.programLabel(command: "claude", account: "claude:ordem") == "claude", "sidebar: following the order, as before")
+check(AIChoices.programLabel(command: "codex", account: "gpt:team") == "codex · team", "sidebar: codex · <name> off its own login")
+check(AIChoices.programLabel(command: "codex", account: "gpt:principal") == "codex", "sidebar: codex on its own login, as before")
+check(AIChoices.programLabel(command: "zsh", account: nil) == "zsh", "sidebar: no AI, the program")
+
+// --- what a tab is running
+check(AIProgramKind(command: "-zsh") == .shell && AIProgramKind(command: "zsh") == .shell
+      && AIProgramKind(command: "bash") == .shell && AIProgramKind(command: "fish") == .shell, "program: shells")
+check(AIProgramKind(command: "2.1.284") == .claude && AIProgramKind(command: "claude") == .claude,
+      "program: Claude Code, by its name or by its version")
+check(AIProgramKind(command: "codex") == .codex, "program: Codex")
+check(AIProgramKind(command: "") == .unknown && AIProgramKind(command: "").allowsChoice,
+      "program: nothing known yet, and the menu open")
+check(AIProgramKind(command: "vim") == .other("vim") && !AIProgramKind(command: "vim").allowsChoice,
+      "program: another program closes the menu")
+check(AIProgramKind(command: "2.1") == .claude && AIProgramKind(command: "2.") == .other("2."),
+      "program: a version has numbers on both sides of a dot")
+
+// --- retrato.json: the account the helper wrote down for each tab ("ia")
 let state = home.appendingPathComponent("state")
 try! fm.createDirectory(at: state, withIntermediateDirectories: true)
+let daemonStart = Date(timeIntervalSince1970: 1_790_000_000.123456)
+func writeRetrato(start: Double, version: Int = 1, writtenMs: Double, entries: [[String: Any]]) {
+    let body: [String: Any] = ["versao": version, "gravado_em_ms": writtenMs, "keepd": ["inicio": start, "pid": 1],
+                               "abas": [], "ia": entries]
+    let temporary = state.appendingPathComponent("retrato.json.tmp")
+    try! JSONSerialization.data(withJSONObject: body).write(to: temporary)
+    _ = try! fm.replaceItemAt(state.appendingPathComponent("retrato.json"), withItemAt: temporary)
+}
+let tabEntries: [[String: Any]] = [
+    ["workspace": "w", "aba": 2, "agente": "claude", "conta": "claude:spare", "vinculo": "exato"],
+    ["workspace": "w", "aba": 3, "agente": "codex", "conta": "gpt:team", "vinculo": "provavel"],
+    ["workspace": "w", "aba": 4, "agente": "claude", "conta": "claude:with space", "vinculo": "exato"],
+]
+let nowMs = Date().timeIntervalSince1970 * 1000
+writeRetrato(start: daemonStart.timeIntervalSince1970 + 0.0004, writtenMs: nowMs - 5000, entries: tabEntries)
+MainActor.assumeIsolated {
+    let store = AITabAccounts(directory: state)
+    check(store.reload(daemonStart: daemonStart), "retrato: read (its daemon's start within 1 ms)")
+    check(store.account(workspace: "w", tab: 2, program: .claude) == "claude:spare", "retrato: tab 2's account")
+    check(store.account(workspace: "w", tab: 3, program: .codex) == "gpt:team", "retrato: tab 3's account (Codex)")
+    check(store.account(workspace: "w", tab: 4, program: .claude) == AIHelper.followOrder,
+          "retrato: an invalid key is passed over, and the default stands")
+    check(store.account(workspace: "w", tab: 9, program: .claude) == AIHelper.followOrder, "retrato: Claude with no line follows the order")
+    check(store.account(workspace: "w", tab: 9, program: .codex) == "gpt:principal", "retrato: Codex with no line is on its own login")
+    check(store.account(workspace: "w", tab: 2, program: .shell) == nil, "retrato: a tab back at its shell is on no account")
+    check(store.account(workspace: "w", tab: 2, program: .other("vim")) == nil, "retrato: another program is on no account")
+    check(!store.reload(daemonStart: daemonStart), "retrato: nothing changes while the file does not")
+    // A switch made in the app shows until a retrato written after it.
+    store.note(workspace: "w", tab: 2, key: "claude:main")
+    check(store.account(workspace: "w", tab: 2, program: .claude) == "claude:main", "switched in the app: shown at once")
+    writeRetrato(start: daemonStart.timeIntervalSince1970, writtenMs: nowMs - 1000, entries: tabEntries)
+    _ = store.reload(daemonStart: daemonStart)
+    check(store.account(workspace: "w", tab: 2, program: .claude) == "claude:main",
+          "switched in the app: a retrato older than the switch does not undo it")
+    var newer = tabEntries
+    newer[0]["conta"] = "claude:work"
+    writeRetrato(start: daemonStart.timeIntervalSince1970, writtenMs: Date().timeIntervalSince1970 * 1000 + 1000, entries: newer)
+    check(store.reload(daemonStart: daemonStart), "switched in the app: a newer retrato is news")
+    check(store.account(workspace: "w", tab: 2, program: .claude) == "claude:work", "switched in the app: the newer retrato's word stands")
+    // Another daemon's, or another format's: the whole file is passed over.
+    writeRetrato(start: daemonStart.timeIntervalSince1970 + 0.002, writtenMs: nowMs + 5000, entries: tabEntries)
+    check(store.reload(daemonStart: daemonStart), "retrato of another daemon: a change, everything goes")
+    check(store.account(workspace: "w", tab: 2, program: .claude) == AIHelper.followOrder,
+          "retrato of another daemon (started 2 ms apart): passed over")
+    writeRetrato(start: daemonStart.timeIntervalSince1970, version: 2, writtenMs: nowMs + 6000, entries: tabEntries)
+    _ = store.reload(daemonStart: daemonStart)
+    check(store.account(workspace: "w", tab: 3, program: .codex) == "gpt:principal", "retrato of version 2: passed over")
+    writeRetrato(start: daemonStart.timeIntervalSince1970, writtenMs: nowMs + 7000, entries: tabEntries)
+    _ = store.reload(daemonStart: daemonStart)
+    check(store.account(workspace: "w", tab: 3, program: .codex) == "gpt:team", "retrato: back to the right one")
+    check(store.reload(daemonStart: daemonStart.addingTimeInterval(10))
+          && store.account(workspace: "w", tab: 3, program: .codex) == "gpt:principal",
+          "retrato: a new daemon voids what was read")
+    let none = AITabAccounts(directory: URL(fileURLWithPath: "/var/empty"))
+    check(!none.reload(daemonStart: daemonStart) && none.account(workspace: "w", tab: 2, program: .claude) == AIHelper.followOrder,
+          "no retrato: nothing to read, and Claude follows the order")
+}
+check(AITabAccounts.directory(environment: ["KIT_KEEP_ESTADO": "/x/y"]).path == "/x/y", "retrato: KIT_KEEP_ESTADO says where")
+check(AITabAccounts.directory(environment: [:]).path.hasSuffix("/.local/state/kit-keep"), "retrato: the helper's own place otherwise")
+
+// --- keep-ia, against the stand-in that logs what it is asked
 let fake = ProcessInfo.processInfo.environment["FAKE_IA"]!
 let fakeDir = ProcessInfo.processInfo.environment["FAKE_IA_DIR"]!
 func helperCalls() -> [[String]] {

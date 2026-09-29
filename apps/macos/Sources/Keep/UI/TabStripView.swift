@@ -24,6 +24,10 @@ final class TabStripView: NSView {
     var onCommands: (() -> Void)?
     /// The row, in the order somebody just put it in.
     var onReorder: (([UInt32]) -> Void)?
+    /// A tab's AI moved to another account, from the chevron beside its
+    /// title: the tab, the key `keep-ia` is asked for, and what the menu
+    /// called it.
+    var onChooseAccount: ((TabID, String, String) -> Void)?
     /// A tab pulled clear of the row and let go: where it landed, in screen
     /// coordinates, and how far along the cell it was being held. The row
     /// does not act on it — it does not know what a window is.
@@ -177,6 +181,13 @@ final class TabStripView: NSView {
             setWindowDraggable(false)
             return
         }
+        // The chevron beside a title opens a menu, lone tab or not, and a
+        // press on it that carried the window off would be a menu that never
+        // opens.
+        if cells.contains(where: { $0.accountButtonContains($0.convert(point, from: self)) }) {
+            setWindowDraggable(false)
+            return
+        }
         // A lone tab is not a tab, it is the window's title — drawn without a
         // capsule for exactly that reason — and there is nowhere to reorder it
         // to. Holding the window still under it would take the title bar away
@@ -206,6 +217,7 @@ final class TabStripView: NSView {
             cell.onClose = { [weak self] id in self?.onClose?(id) }
             cell.onRename = { [weak self] id, name in self?.renamed(id, to: name) }
             cell.onRenameAsked = { [weak self] id in self?.rename(id) }
+            cell.onAccountMenu = { [weak self] cell in self?.accountMenu(for: cell) }
             addSubview(cell)
             cells.append(cell)
         }
@@ -572,6 +584,25 @@ final class TabStripView: NSView {
         animating = false
     }
 
+    // MARK: - a tab's AI
+
+    /// The chevron's menu, for whatever tab the cell is showing when it is
+    /// pressed: cells are reused by place, and the tab at a place changes as
+    /// tabs open, close and move.
+    ///
+    /// A name being typed is settled first, and one waiting out its pause
+    /// called off, as any other press in the row does: a menu over an open
+    /// field would leave the field holding the keyboard under it.
+    private func accountMenu(for cell: TabCellView) -> NSMenu? {
+        guard let item = cell.shownItem else { return nil }
+        callOffRename()
+        for open in cells { open.finishRenaming(keep: true) }
+        return AccountMenu.make(tab: item.id, account: item.account, command: item.command) {
+            [weak self] key, label in
+            self?.onChooseAccount?(item.id, key, label)
+        }
+    }
+
     // MARK: - naming a tab
 
     /// Bumped to call off a name that was asked for and has not opened yet.
@@ -857,6 +888,9 @@ final class TabCellView: NSView {
     var onRename: ((TabID, String?) -> Void)?
     /// "Rename Tab…" from the menu. The row decides when the field opens.
     var onRenameAsked: ((TabID) -> Void)?
+    /// The menu of the tab's AI and account, asked of the row when the
+    /// chevron is pressed.
+    var onAccountMenu: ((TabCellView) -> NSMenu?)?
 
     private var item: SessionSnapshot.StripItem?
     private var palette: TabStripView.Palette?
@@ -912,6 +946,14 @@ final class TabCellView: NSView {
     private var labelTrailing: NSLayoutConstraint!
     private let shortcutLabel = NSTextField(labelWithString: "")
     private let closeButton = NSButton()
+    /// The chevron after the title that opens the menu of the tab's AI and
+    /// account. Its room is kept whenever it can be shown, and the title and
+    /// it are centred together, so the title does not shift as it comes and
+    /// goes under the pointer.
+    private let accountButton = MenuGlyphButton(symbol: "chevron.down", pointSize: 8, weight: .bold)
+    /// The chevron's width, and the gap it keeps from the title.
+    private static let chevronWidth: CGFloat = 13
+    private static let chevronGap: CGFloat = 2
 
     /// The field a new name is typed into, laid over the title while it is.
     ///
@@ -1001,6 +1043,16 @@ final class TabCellView: NSView {
         editor.setAccessibilityLabel("Tab Name")
         addSubview(editor)
 
+        accountButton.translatesAutoresizingMaskIntoConstraints = false
+        accountButton.wanted = false
+        accountButton.toolTip = "This tab's AI and account"
+        accountButton.menuProvider = { [weak self] in
+            guard let self else { return nil }
+            return self.onAccountMenu?(self)
+        }
+        accountButton.onDidClose = { [weak self] in self?.recheckHover() }
+        addSubview(accountButton)
+
         labelCenter = label.centerXAnchor.constraint(equalTo: centerXAnchor)
         labelLeading = label.leadingAnchor.constraint(
             greaterThanOrEqualTo: leadingAnchor, constant: 28)
@@ -1020,6 +1072,12 @@ final class TabCellView: NSView {
 
             shortcutLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             shortcutLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            accountButton.leadingAnchor.constraint(
+                equalTo: label.trailingAnchor, constant: Self.chevronGap),
+            accountButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            accountButton.widthAnchor.constraint(equalToConstant: Self.chevronWidth),
+            accountButton.heightAnchor.constraint(equalToConstant: 16),
         ])
 
         setAccessibilityElement(true)
@@ -1045,6 +1103,12 @@ final class TabCellView: NSView {
         // choosing it is one capsule firming up rather than two capsules.
         hoverFill.frame = fill.frame
         hoverFill.layer?.cornerRadius = radius
+        // Whether the chevron beside the title can be shown, and so has its
+        // room kept: `keep-ia` is installed, the tab is wide enough to spare
+        // fifteen points, and no name is being typed over the title.
+        let naming = renaming != nil
+        let chevron = item?.offersAccounts == true && !naming && bounds.width >= 120
+        let room = chevron ? Self.chevronGap + Self.chevronWidth : 0
         // The badge takes the capsule's place — except on a lone tab, which
         // has no capsule and spans the row: there it hugs the title, where
         // the eye is, rather than lighting up the whole titlebar.
@@ -1052,7 +1116,7 @@ final class TabCellView: NSView {
             let title = label.frame
             attention.frame = NSRect(
                 x: (title.minX - 12).rounded(), y: fill.frame.minY,
-                width: (title.width + 24).rounded(), height: fill.frame.height)
+                width: (title.width + room + 24).rounded(), height: fill.frame.height)
         } else {
             attention.frame = fill.frame
         }
@@ -1066,12 +1130,16 @@ final class TabCellView: NSView {
         // A tab being named shows the name and nothing else: the number and
         // the close button would only crowd the field, and a close button
         // appearing under the pointer mid-word is a tab closed by accident.
-        let naming = renaming != nil
         shortcutLabel.isHidden = naming || shortcut == nil || bounds.width < 160
         closeButton.isHidden = naming || !hovered || alone || bounds.width < 96
         labelLeading.constant = closeButton.isHidden ? 8 : 28
-        labelTrailing.constant = shortcutLabel.isHidden ? -8 : -36
-        labelCenter.constant = titleOffset
+        labelTrailing.constant = (shortcutLabel.isHidden ? -8 : -36) - room
+        labelCenter.constant = titleOffset - room / 2
+        // Seen on the tab you are in, and on any other under the pointer —
+        // quiet at rest, like the close button beside it. On a lone tab,
+        // which is the window's title, only under the pointer.
+        accountButton.wanted = chevron
+            && (hovered || (!alone && item?.isActive == true))
 
         // Shown and hidden here rather than where the naming starts and
         // stops. It mostly stops because the keyboard has just gone
@@ -1176,6 +1244,8 @@ final class TabCellView: NSView {
         shortcutLabel.stringValue = shortcut ?? ""
         shortcutLabel.textColor = wantsYou ? Attention.ink.withAlphaComponent(0.6) : palette.dimText
         closeButton.contentTintColor = wantsYou ? Attention.ink : palette.text
+        accountButton.restingColor = wantsYou ? Attention.ink.withAlphaComponent(0.6) : palette.dimText
+        accountButton.litColor = wantsYou ? Attention.ink : palette.text
 
         // What a tab is, beside what it is called: split into panes, and open
         // in another window as well. Drawn as symbols rather than as the box
@@ -1205,6 +1275,11 @@ final class TabCellView: NSView {
 
         let said = wantsYou ? "\(title) — Claude Code is waiting for you" : title
         setAccessibilityLabel(said)
+        // Named after the tab it opens the menu of, which changes with the
+        // cell's place in the row.
+        accountButton.setAccessibilityLabel(
+            "Choose the AI for \(Session.plainTitle(item.title, fallback: "untitled"))")
+        accountButton.setAccessibilityIdentifier("strip-ai-\(item.id)")
         toolTip = item.isElsewhere
             ? "\(wantsYou ? said : item.title) — open in another window"
             : (wantsYou ? said : item.title)
@@ -1277,6 +1352,17 @@ final class TabCellView: NSView {
         }
     }
 
+    /// Where the pointer is, asked rather than remembered — after a menu,
+    /// which takes the pointer's comings and goings for as long as it is up.
+    func recheckHover() {
+        let inside = window.map { window -> Bool in
+            bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        } ?? false
+        guard inside != hovered else { return }
+        hovered = inside
+        refresh()
+    }
+
     /// Told from the row that the pointer is gone, for the case AppKit does
     /// not say so itself.
     func clearHover() {
@@ -1293,6 +1379,14 @@ final class TabCellView: NSView {
 
     /// Which tab this cell is showing, for the row that reorders them.
     var tabID: TabID? { item?.id }
+    /// All of what the cell is showing, read by the row when the chevron is
+    /// pressed.
+    var shownItem: SessionSnapshot.StripItem? { item }
+
+    /// Whether a point, in this cell's coordinates, is on the chevron.
+    func accountButtonContains(_ point: NSPoint) -> Bool {
+        accountButton.isShowing && !accountButton.isHidden && accountButton.frame.contains(point)
+    }
     var isActive: Bool { item?.isActive ?? false }
     var isRenaming: Bool { renaming != nil }
     /// Where the field is while a name is being typed, in this cell's
@@ -1364,6 +1458,9 @@ final class TabCellView: NSView {
         if renaming != nil, editor.frame.contains(local) {
             return editor.hitTest(local) ?? editor
         }
+        // The chevron opens its menu: not a press that selects, carries or
+        // names the tab.
+        if accountButtonContains(local) { return accountButton }
         return self
     }
 

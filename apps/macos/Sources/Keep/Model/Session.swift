@@ -16,6 +16,10 @@ protocol SessionRendering: AnyObject {
     /// Ask before ending something, on this window; `then` runs only on yes.
     /// A no puts the keyboard back where it was.
     func confirm(_ question: Confirmation, then: @escaping () -> Void)
+    /// Ask before going on with something that was refused as it stood —
+    /// a tab busy when its account was to change; `then` runs only on yes.
+    /// Escape is the no.
+    func ask(_ question: Confirmation, then: @escaping () -> Void)
     /// Say that something asked for could not be done, and why.
     func present(problem: String, detail: String)
 }
@@ -53,8 +57,15 @@ final class Session {
     private var claudeActivities: [TabID: ClaudeActivity] = [:]
     /// When each tab's Claude Code started waiting on an answer.
     private var waitingSince: [TabID: Date] = [:]
-    /// Windows a login is being opened from: a second click meanwhile is
-    /// dropped rather than opening a second login.
+    /// The account each tab's AI runs on, as `keep-ia` wrote it down.
+    private let aiAccounts = AITabAccounts()
+    /// Whether `keep-ia`, the helper outside the app, is installed: the
+    /// chevrons that change a tab's account are there only when it is.
+    private var aiHelperPresent = AIHelper.path != nil
+    /// Tabs whose account the helper is changing now: a second choice made
+    /// meanwhile — a double click — is dropped rather than sent after it.
+    private var switching: Set<TabID> = []
+    /// Windows a login is being opened from, for the same reason.
     private var signingIn: Set<WindowID> = []
 
     /// What each window is pointed at, and who to hand its snapshot to.
@@ -312,6 +323,15 @@ final class Session {
         }
         let newDaemon = checkDaemon()
         changed = changed || newDaemon
+        // What the helper last wrote down about the tabs' accounts, and
+        // whether it can be asked to change one: both can change between
+        // polls.
+        if aiAccounts.reload(daemonStart: Daemon.startedAt ?? daemonStart) { changed = true }
+        let helper = AIHelper.path != nil
+        if helper != aiHelperPresent {
+            aiHelperPresent = helper
+            changed = true
+        }
 
         // Workspaces gone from the daemon take their entities with them.
         let liveNames = Set(listing.map(\.name))
@@ -1010,6 +1030,14 @@ final class Session {
                 break
             }
 
+        case .chooseAccount(let id, let key, let label):
+            guard let tab = workspaces.first(where: { $0.name == id.workspace })?
+                .tabs.first(where: { $0.id == id })
+            else { return }
+            // What it is on already is no change, whichever menu said it.
+            guard key != aiAccount(of: tab) else { return }
+            switchAccount(id, to: key, label: label, interrupting: false, from: window)
+
         case .signIn(let engine):
             signIn(engine, from: window)
 
@@ -1028,7 +1056,64 @@ final class Session {
         }
     }
 
-    // MARK: - signing in to another account
+    // MARK: - a tab's AI and account
+
+    /// The account a tab's AI runs on: what the helper wrote down, what it
+    /// has just been told to do, or — for an AI it has not written down
+    /// yet — the one such an AI starts on.
+    private func aiAccount(of tab: TabEntity) -> String? {
+        aiAccounts.account(
+            workspace: tab.id.workspace, tab: tab.id.root,
+            program: AIProgramKind(command: Self.program(of: tab)))
+    }
+
+    /// Ask the helper to put a tab's AI on another account, off the main
+    /// thread — it may be seconds at it: it waits for the program to leave
+    /// and comes back with the conversation on the new one.
+    ///
+    /// A tab at work is not interrupted without a yes: the helper says it is
+    /// busy, the question goes up on this window, and a yes asks again,
+    /// allowed to interrupt. Anything else it refuses is said, in its words.
+    /// A yes is remembered for the tab until the helper writes the tab down
+    /// again, so the menu and the sidebar say it at once.
+    private func switchAccount(
+        _ id: TabID, to key: String, label: String, interrupting: Bool, from window: WindowID
+    ) {
+        guard !switching.contains(id) else {
+            Trace.log("ia", "\(id) is being switched already; \(key) dropped")
+            return
+        }
+        switching.insert(id)
+        Trace.log("ia", "switching \(id) to \(key)\(interrupting ? ", interrupting it" : "")")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let answer = AIHelper.switchAccount(
+                workspace: id.workspace, tab: id.root, to: key, interrupt: interrupting)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.switching.remove(id)
+                switch answer {
+                case .success(let done):
+                    Trace.log("ia", "\(id) on \(key): \(done)")
+                    self.aiAccounts.note(workspace: id.workspace, tab: id.root, key: key)
+                    self.publish()
+                case .failure(let problem) where problem.reason == "ocupada" && !interrupting:
+                    Trace.log("ia", "\(id) is busy: asking")
+                    self.renderer(window)?.ask(Confirmation(
+                        title: "The tab “\(self.tabName(id))” is busy",
+                        detail: problem.detail
+                            + "\n\nSwitching it to \(label) now interrupts what it is doing.",
+                        action: "Interrupt and Switch Now"
+                    )) { [weak self] in
+                        self?.switchAccount(id, to: key, label: label, interrupting: true, from: window)
+                    }
+                case .failure(let problem):
+                    Trace.log("ia", "\(id) not switched (\(problem.reason ?? "?")): \(problem.detail)")
+                    self.renderer(window)?.present(
+                        problem: "Could not switch the tab's AI", detail: problem.detail)
+                }
+            }
+        }
+    }
 
     /// Ask `keep-ia` for a login to another account, in a new tab of this
     /// window's workspace, and go to that tab when it is there.
@@ -1813,7 +1898,9 @@ final class Session {
                         },
                         claudeMode: claudeModes[tab.id],
                         claudeActivity: claudeActivities[tab.id],
-                        wantsYouSince: waitingSince[tab.id]
+                        wantsYouSince: waitingSince[tab.id],
+                        account: aiAccount(of: tab),
+                        offersAccounts: aiHelperPresent
                     )
                 },
                 expanded: !sidebar.folded.contains(workspace.name)
@@ -1829,7 +1916,10 @@ final class Session {
                 isElsewhere: views.contains { $0.key != window && $0.value.tab == tab.id },
                 claudeMode: claudeModes[tab.id],
                 claudeActivity: claudeActivities[tab.id],
-                wantsYouSince: waitingSince[tab.id]
+                wantsYouSince: waitingSince[tab.id],
+                command: Self.program(of: tab),
+                account: aiAccount(of: tab),
+                offersAccounts: aiHelperPresent
             )
         }
         let active = shownTab(in: window).map { tab in

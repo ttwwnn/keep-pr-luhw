@@ -480,12 +480,23 @@ struct WorkspaceSidebar: View {
                     // name is the word that tells you what the tab is.
                     .layoutPriority(-1)
                     .onHover { inside in notePointer(inside, onNameOf: .tab(tab.id)) }
-                if !tab.command.isEmpty {
-                    Text("— \(tab.command)")
+                // The program, or — for an AI kept on an account of its own —
+                // which account: "— claude · spare".
+                let program = AIChoices.programLabel(command: tab.command, account: tab.account)
+                if !program.isEmpty {
+                    Text("— \(program)")
                         .font(.system(size: 12))
                         .foregroundStyle(wantsYou ? Palette.attentionInk.opacity(0.62) : Palette.inkFaint)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
+                }
+                if tab.offersAccounts {
+                    // The chevron's place, kept whether or not it is showing,
+                    // as the close button's is. The chevron itself is laid
+                    // over the row, not in here: see the overlay below.
+                    Color.clear
+                        .frame(width: 12, height: 12)
+                        .anchorPreference(key: AccountGlyphPlace.self, value: .bounds) { $0 }
                 }
                 if tab.isElsewhere {
                     Image(systemName: "macwindow.on.rectangle")
@@ -504,6 +515,24 @@ struct WorkspaceSidebar: View {
                 chosen: chosen, hovered: hoveredHere, wantsYou: wantsYou, since: tab.wantsYouSince))
         }
         .buttonStyle(.plain)
+        // The chevron that opens the menu of the tab's AI and account, where
+        // its place in the label is, and over the row rather than in it for
+        // the close button's reason. There on the chosen tab and under the
+        // pointer; while its menu is open it stays by itself; never while
+        // something is being dragged.
+        .overlayPreferenceValue(AccountGlyphPlace.self) { place in
+            GeometryReader { proxy in
+                if let place {
+                    let rect = proxy[place]
+                    accountGlyph(
+                        tab,
+                        visible: tab.offersAccounts && dragged == nil && (chosen || hoveredHere),
+                        onBadge: wantsYou)
+                        .frame(width: 14, height: 16)
+                        .position(x: rect.midX, y: rect.midY)
+                }
+            }
+        }
         // Laid over the row rather than inside its label: a button inside a
         // button hands its clicks to whichever of the two SwiftUI prefers.
         .overlay(alignment: .trailing) {
@@ -650,6 +679,37 @@ struct WorkspaceSidebar: View {
         .opacity(visible ? 1 : 0)
         .allowsHitTesting(visible)
         .animation(.easeOut(duration: 0.12), value: visible)
+    }
+
+    /// The chevron beside a tab's program: the menu of its AI and account,
+    /// the same one the strip's chevron opens.
+    ///
+    /// What the menu offers is read when it opens, from the footer's
+    /// monitor, and not watched from here: a reading arriving must not
+    /// rebuild this list, whose rebuilds take the keyboard.
+    private func accountGlyph(
+        _ tab: SessionSnapshot.SidebarTab, visible: Bool, onBadge: Bool
+    ) -> some View {
+        MenuGlyph(
+            symbol: "chevron.down", pointSize: 8, weight: .bold,
+            label: "Choose the AI for \(tab.title)",
+            identifier: "sidebar-ai-\(tab.id)",
+            help: "This tab's AI and account",
+            visible: visible,
+            resting: onBadge ? Attention.ink.withAlphaComponent(0.62) : Palette.faintColor,
+            lit: onBadge ? Attention.ink : Palette.restingColor,
+            menu: {
+                AccountMenu.make(tab: tab.id, account: tab.account, command: tab.command) { key, label in
+                    dispatch(.chooseAccount(tab.id, key: key, label: label))
+                }
+            },
+            onWillOpen: {
+                // A name being typed is settled, and one still waiting out
+                // its pause called off, before a menu comes up over the list.
+                disarmRename()
+                lastClicked = nil
+                if renaming != nil { endRename(saving: true, handingBack: false) }
+            })
     }
 
     /// A tab's title in the colour of the mode Claude Code is in there, when
@@ -1208,6 +1268,18 @@ private enum Palette {
     static let inkResting = ink(dark: 0.60, light: 0.75)
     static let inkFaint = ink(dark: 0.38, light: 0.55)
 
+    /// The same two inks, for a control AppKit draws.
+    static let restingColor = inkColor(dark: 0.60, light: 0.75)
+    static let faintColor = inkColor(dark: 0.38, light: 0.55)
+
+    private static func inkColor(dark: CGFloat, light: CGFloat) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor.white.withAlphaComponent(dark)
+                : NSColor.black.withAlphaComponent(light)
+        }
+    }
+
     /// The hover and focus washes: light lifts a dark ground, shade settles
     /// on a light one.
     static func wash(_ alpha: CGFloat) -> Color {
@@ -1304,6 +1376,16 @@ private struct AttentionCapsule: View {
                 return next
             }
         }
+    }
+}
+
+/// Where the chevron of a tab's row goes: the place kept for it after the
+/// program's name, handed up to the overlay that draws it.
+private struct AccountGlyphPlace: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = value ?? nextValue()
     }
 }
 

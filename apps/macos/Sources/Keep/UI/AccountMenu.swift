@@ -1,11 +1,15 @@
 import AppKit
 import SwiftUI
 
-/// A small glyph that opens a menu: the usage footer's "+".
+/// A small glyph that opens a menu: the chevron beside a tab's title, in the
+/// strip and in the sidebar, and the usage footer's "+".
 ///
-/// AppKit, so that the same control can hang a menu off a glyph in the
-/// app's AppKit half as well as in its SwiftUI one; and a view is what can
-/// tell the titlebar that a press on it is not the start of a window drag.
+/// AppKit, and one of them for all three places. The strip is AppKit; in the
+/// sidebar a SwiftUI menu button inside a tab's row would be a button inside
+/// a button, which hands its clicks to whichever of the two SwiftUI prefers
+/// (the tab's × has the same reason to sit over the row). And a view is what
+/// can tell the titlebar that a press on it is not the start of a window
+/// drag.
 ///
 /// Quiet at rest, lit under the pointer and while its menu is open, and
 /// hidden when whoever holds it does not want it — with its menu open it
@@ -196,7 +200,8 @@ final class MenuGlyphButton: NSView {
     }
 }
 
-/// `MenuGlyphButton` in a SwiftUI view: the footer's "+".
+/// `MenuGlyphButton` in a SwiftUI view: the sidebar's chevron, the footer's
+/// "+".
 struct MenuGlyph: NSViewRepresentable {
     let symbol: String
     var pointSize: CGFloat = 9
@@ -233,6 +238,53 @@ struct MenuGlyph: NSViewRepresentable {
 /// The menus the glyphs open.
 @MainActor
 enum AccountMenu {
+    /// A tab's AI and account: following the order of priority, or one
+    /// account of it (`AIChoices`). The same menu in the strip and in the
+    /// sidebar.
+    ///
+    /// Built from what the footer knows now — the order, and which accounts
+    /// can take work — read once, here, rather than watched: the sidebar
+    /// must not redraw whenever a reading comes in. `choose` is handed the
+    /// key and what the menu called it, a turn after the menu has gone,
+    /// since what it sets off may put a sheet up.
+    static func make(
+        tab: TabID, account: String?, command: String,
+        choose: @escaping (_ key: String, _ label: String) -> Void
+    ) -> NSMenu {
+        let program = AIProgramKind(command: command)
+        let rows = AIChoices.rows(lines: UsageMonitor.shared.lines, current: account, program: program)
+        let menu = NSMenu(title: "The tab's AI")
+        // Said here, item by item: left to AppKit, an item with a target
+        // would be enabled whatever the tab is running.
+        menu.autoenablesItems = false
+        for row in rows {
+            guard row.kind != .separator else {
+                menu.addItem(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: row.title, action: nil, keyEquivalent: "")
+            item.isEnabled = row.enabled
+            switch row.mark {
+            case .on: item.state = .on
+            case .mixed: item.state = .mixed
+            case .none: item.state = .off
+            }
+            item.toolTip = row.help
+            if let key = row.key, row.enabled {
+                let choice = Choice(
+                    tab: tab, key: key, label: row.label, current: account, choose: choose)
+                // The item holds its action: a menu item's target is weak,
+                // and nothing else keeps this one.
+                item.representedObject = choice
+                item.target = choice
+                item.action = #selector(Choice.chosen(_:))
+            }
+            menu.addItem(item)
+        }
+        Trace.log("ia", "menu for \(tab): on \(account ?? "no AI"), running \(command.isEmpty ? "?" : command)")
+        return menu
+    }
+
     /// The footer's "+": a login to another account of either service.
     static func signIn(_ open: @escaping (AIEngine) -> Void) -> NSMenu {
         let menu = NSMenu(title: "Sign in to another account")
@@ -249,6 +301,36 @@ enum AccountMenu {
             menu.addItem(item)
         }
         return menu
+    }
+
+    private final class Choice: NSObject {
+        let tab: TabID
+        let key: String
+        let label: String
+        let current: String?
+        let choose: (String, String) -> Void
+
+        init(
+            tab: TabID, key: String, label: String, current: String?,
+            choose: @escaping (String, String) -> Void
+        ) {
+            self.tab = tab
+            self.key = key
+            self.label = label
+            self.current = current
+            self.choose = choose
+        }
+
+        /// What the tab is on already is no change: nothing is asked.
+        @objc func chosen(_ sender: NSMenuItem) {
+            guard key != current else {
+                Trace.log("ia", "\(tab) is on \(key) already")
+                return
+            }
+            Trace.log("ia", "chose \(key) for \(tab)")
+            let (choose, key, label) = (self.choose, self.key, self.label)
+            DispatchQueue.main.async { choose(key, label) }
+        }
     }
 
     private final class SignIn: NSObject {

@@ -5,6 +5,7 @@
 //   mousedrag windows                                -> one "id x y w h" per window
 //   mousedrag watch <seconds>                        -> a line per position it takes
 //   mousedrag move <x> <y>                           -> park the pointer, press nothing
+//   mousedrag click <x> <y>                          -> walk there and click once
 //   mousedrag drag <x1> <y1> <x2> <y2> <steps> <ms>
 //
 // Separate from sendkey, and posting to the HID tap rather than to the app's
@@ -132,6 +133,35 @@ case "move":
         usleep(12_000)
     }
 
+case "click":
+    // One click, as a hand makes it: walked there, a pause for the view
+    // under the pointer to have been told it is there, then down and up.
+    guard args.count >= 4, let x = Double(args[2]), let y = Double(args[3]) else { exit(2) }
+    let source = CGEventSource(stateID: .hidSystemState)
+    let target = CGPoint(x: x, y: y)
+    let from = CGEvent(source: nil)?.location ?? target
+    for step in 1...12 {
+        let t = Double(step) / 12
+        let event = CGEvent(
+            mouseEventSource: source, mouseType: .mouseMoved,
+            mouseCursorPosition: CGPoint(
+                x: from.x + (x - from.x) * t, y: from.y + (y - from.y) * t),
+            mouseButton: .left)
+        event?.flags = []
+        event?.post(tap: .cghidEventTap)
+        usleep(12_000)
+    }
+    usleep(150_000)
+    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+        let event = CGEvent(
+            mouseEventSource: source, mouseType: type, mouseCursorPosition: target,
+            mouseButton: .left)
+        event?.flags = []
+        event?.setIntegerValueField(.mouseEventClickState, value: 1)
+        event?.post(tap: .cghidEventTap)
+        usleep(60_000)
+    }
+
 case "drag":
     guard args.count >= 8,
         let x1 = Double(args[2]), let y1 = Double(args[3]),
@@ -169,6 +199,7 @@ default:
                mousedrag frame
                mousedrag watch <seconds>
                mousedrag move <x> <y>
+               mousedrag click <x> <y>
                mousedrag drag <x1> <y1> <x2> <y2> <steps> <ms>
 
         """.utf8))

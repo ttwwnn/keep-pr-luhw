@@ -59,7 +59,7 @@ restore_app() {
     local bundle=$1
     ( unset KEEP_SOCKET KEEP_TRACE KEEP_STATE_DIR KEEP_APP_NAME \
         KEEP_AI_USAGE_HOME KEEP_AI_USAGE_CLAUDE_URL KEEP_AI_USAGE_CODEX_URL \
-        KEEP_IA_BIN
+        KEEP_IA_BIN KIT_KEEP_ESTADO
       open "$bundle" >/dev/null 2>&1 ) &
 }
 
@@ -70,15 +70,18 @@ restore_app() {
 export KEEP_AI_USAGE_HOME="${KEEP_AI_USAGE_HOME:-/var/empty}"
 
 # Nor does it ask `keep-ia`, the helper that keeps the order of the AI
-# accounts and makes their logins, to change anything. With it installed, a
-# build would offer arrows in the footer and a "+", each a way for a test to
-# reach the real vault. `KEEP_IA_BIN` set is the only helper the app looks
-# at, and an empty directory is none; the footer's test points it at a
-# stand-in of its own.
+# accounts, makes their logins and puts a tab on another one, to change
+# anything. With it installed, a build would offer arrows in the footer, a
+# "+", and a chevron beside every tab's title, each a way for a test to reach
+# the real vault and the real tabs; and it would read the account of every
+# tab from the helper's own `retrato.json`. `KEEP_IA_BIN` set is the only
+# helper the app looks at, and an empty directory is none; the tests of those
+# features point both at stand-ins of their own.
 # And an app reading a made-up home, as above, never asks the installed
 # helper, even without `KEEP_IA_BIN` (Daemon/ExternalHelper.swift): that one
 # acts on the real home.
 export KEEP_IA_BIN="${KEEP_IA_BIN:-/var/empty}"
+export KIT_KEEP_ESTADO="${KIT_KEEP_ESTADO:-/var/empty}"
 
 # Put the client and daemon that were just built inside the app bundle.
 #
