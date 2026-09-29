@@ -16,6 +16,23 @@ struct TerminalPrefs: Codable, Equatable {
     var theme: String?
     var fontFamily: String?
     var fontSize: Double?
+    /// "light" or "dark" to hold Keep to one, whatever the system is doing;
+    /// nil to follow it. Which half of a `dark:…,light:…` theme the
+    /// terminal wears, and so what the chrome around it wears too.
+    ///
+    /// Not a config line: it is not the terminal's setting but the app's,
+    /// and it reaches libghostty the way the system's own does — as the
+    /// scheme the app is in.
+    var appearance: String?
+
+    /// The appearance these ask the app to be in: nil for the system's.
+    var nsAppearance: NSAppearance? {
+        switch appearance {
+        case "light": return NSAppearance(named: .aqua)
+        case "dark": return NSAppearance(named: .darkAqua)
+        default: return nil
+        }
+    }
 
     static let none = TerminalPrefs()
 

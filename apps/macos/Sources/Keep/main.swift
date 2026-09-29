@@ -227,6 +227,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Before libghostty is made: the scheme it starts in is read from
+        // the app's appearance, and a Keep held to dark that started light
+        // would wear the light half of its theme for a frame or two.
+        NSApp.appearance = GhosttyApp.prefs.nsAppearance
         _ = GhosttyApp.shared
         buildMenu()
         swallowUnwantedKeys()
@@ -359,9 +363,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func toggleQuickTerminal(_ sender: Any?) { QuickTerminal.shared.toggle() }
 
+    /// The appearances the menu offers, by the item's tag: the system's, or
+    /// one held whatever the system does.
+    private static let appearances: [String?] = [nil, "light", "dark"]
+
+    /// Hold Keep light or dark, or let it follow the system again.
+    ///
+    /// Set on the app, which is where libghostty reads the scheme from —
+    /// the terminal takes that half of a `dark:…,light:…` theme, and the
+    /// chrome follows the terminal as it always does. Kept with the rest of
+    /// what Keep has been told about its looks, so it is still so tomorrow.
+    @objc func chooseAppearance(_ sender: Any?) {
+        guard let tag = (sender as? NSMenuItem)?.tag,
+              Self.appearances.indices.contains(tag)
+        else { return }
+        var prefs = GhosttyApp.prefs
+        prefs.appearance = Self.appearances[tag]
+        GhosttyApp.shared.adopt(prefs)
+        NSApp.appearance = prefs.nsAppearance
+    }
+
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(toggleVerticalTabs(_:)) {
             item.state = focused?.isVerticalTabs == true ? .on : .off
+        }
+        if item.action == #selector(chooseAppearance(_:)),
+           Self.appearances.indices.contains(item.tag)
+        {
+            item.state = Self.appearances[item.tag] == GhosttyApp.prefs.appearance ? .on : .off
         }
         return true
     }
@@ -460,6 +489,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(toggleQuickTerminal(_:)), keyEquivalent: "`")
         quickItem.keyEquivalentModifierMask = [.control]
         quickItem.target = self
+        viewMenu.addItem(.separator())
+        let appearanceItem = viewMenu.addItem(
+            withTitle: "Appearance", action: nil, keyEquivalent: "")
+        let appearanceMenu = NSMenu(title: "Appearance")
+        for (tag, title) in ["Automatic", "Light", "Dark"].enumerated() {
+            let item = appearanceMenu.addItem(
+                withTitle: title, action: #selector(chooseAppearance(_:)), keyEquivalent: "")
+            item.tag = tag
+            item.target = self
+            if tag == 0 { appearanceMenu.addItem(.separator()) }
+        }
+        appearanceItem.submenu = appearanceMenu
         viewItem.submenu = viewMenu
         main.addItem(viewItem)
 
