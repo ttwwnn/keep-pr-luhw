@@ -284,14 +284,18 @@ func usage(_ account: AIAccountSummary, _ windows: [(String, Double)] = [], limi
 check(usage(summary(.claude, "a"), read: false).isAvailable, "available: not measured yet")
 check(usage(summary(.claude, "a"), [("5h", 94.9), ("7d", 50), ("Fable", 100)]).isAvailable,
       "available: 5h and 7d under 95 (a per-model window does not count)")
-check(!usage(summary(.claude, "a"), [("5h", 95)]).isAvailable, "not available: 5h at 95%")
-check(!usage(summary(.codex, "a"), [("7d", 99)]).isAvailable, "not available: 7d at 99%")
+// the service refuses at 100%; from 95 to 99 an account still takes work
+check(usage(summary(.claude, "a"), [("5h", 95)]).isAvailable, "available: 5h at 95% (near its limit, still answering)")
+check(usage(summary(.claude, "a"), [("5h", 6), ("7d", 96)]).isAvailable, "available: 7d at 96%")
+check(usage(summary(.codex, "a"), [("7d", 99)]).isAvailable, "available: 7d at 99%")
+check(!usage(summary(.claude, "a"), [("5h", 100)]).isAvailable, "not available: 5h at 100%")
+check(!usage(summary(.claude, "a"), [("5h", 33), ("7d", 100)]).isAvailable, "not available: 7d at 100%")
 check(!usage(summary(.claude, "a"), [("5h", 10)], limit: true).isAvailable, "not available: at the limit")
 check(!usage(summary(.claude, "a", warning: "login refused"), read: false).isAvailable,
       "not available: something wrong with the login")
 
 // --- a tab's AI menu (AIChoices)
-let full = usage(summary(.claude, "full", email: "full@example.com"), [("5h", 97), ("7d", 20)])
+let full = usage(summary(.claude, "full", email: "full@example.com"), [("5h", 100), ("7d", 20)])
 let gptMain = usage(summary(.codex, "main", active: true, email: "g@example.com", slots: [AIAccounts.codexOwnSlot]),
                     [("7d", 3)])
 let inUse = usage(summary(.claude, "main", active: true, names: ["main", "work"], email: "main@example.com"),
@@ -334,6 +338,11 @@ check(AIChoices.followOrderKey([full, inUse, gptMain]) == AIHelper.followOrder, 
 check(AIChoices.followOrderKey([full, gptMain]) == "gpt:principal", "following: the first available is GPT → gpt:<slot>")
 check(AIChoices.followOrderKey([full, refused]) == AIHelper.followOrder, "following: none available → the first in the order")
 check(AIChoices.followOrderKey([]) == AIHelper.followOrder, "following: no accounts → claude:ordem")
+let near = usage(summary(.claude, "spare", email: "spare@example.com"), [("5h", 6), ("7d", 96)])
+check(AIChoices.followOrderKey([near, full, gptMain]) == AIHelper.followOrder,
+      "following: the first Claude account near its limit (96%) still answers → claude:ordem, not GPT")
+check(!AIChoices.title(near).contains("at the limit"), "menu: an account near its limit does not say 'at the limit'",
+      AIChoices.title(near))
 check(AIChoices.rows(lines: [], current: nil, program: .claude).map(\.kind) == [.follow], "no accounts: only following the order")
 check(AIChoices.programLabel(command: "claude", account: "claude:spare") == "claude · spare",
       "sidebar: claude · <name> on an account of its own")

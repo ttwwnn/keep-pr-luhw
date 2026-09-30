@@ -478,15 +478,18 @@ struct AccountUsage: Identifiable, Equatable, Codable {
     var id: String { account.id }
 
     /// Whether this account can take work now, as the helper judges it:
-    /// nothing known to be wrong with its login, not at its limit, and its
-    /// five-hour and weekly windows short of the 95% at which work moves on
-    /// to the next account.
+    /// nothing known to be wrong with its login, and not at its limit. The
+    /// service refuses at 100% of the five-hour or the weekly window, and
+    /// only there does an account leave the order. From 95% the helper moves
+    /// work on ahead of the limit, but only to an account with room; one
+    /// past 95% still takes work, and taking it for one at its limit sent a
+    /// new tab to GPT while a Claude account still answered.
     /// One not measured yet is given the benefit of the doubt.
     var isAvailable: Bool {
         guard account.warning == nil else { return false }
         guard let reading else { return true }
         if reading.limitReached { return false }
-        return !reading.windows.contains { ($0.label == "5h" || $0.label == "7d") && $0.percent >= 95 }
+        return !reading.windows.contains { ($0.label == "5h" || $0.label == "7d") && $0.percent >= 100 }
     }
 }
 

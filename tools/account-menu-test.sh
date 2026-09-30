@@ -178,7 +178,8 @@ codex = open(sys.argv[2]).read()
 def claude(five, week):
     return {"five_hour": {"utilization": five, "resets_at": None},
             "seven_day": {"utilization": week, "resets_at": None}}
-CLAUDE = {"tok-main": claude(10, 20), "tok-spare": claude(30, 40), "tok-full": claude(97, 50)}
+# "full" at its limit: 100%, where the service refuses; an account at 95-99% still takes work and is not marked
+CLAUDE = {"tok-main": claude(10, 20), "tok-spare": claude(30, 40), "tok-full": claude(100, 50)}
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
