@@ -67,7 +67,7 @@ final class ClaudeModeWatcher {
 
     private func poll() {
         guard !inFlight else { return }
-        let tabs = Array(session.claudeTabs().prefix(Self.perTick))
+        let tabs = Array(session.aiTabs().prefix(Self.perTick))
         guard !tabs.isEmpty else {
             session.noteClaudeModes([:])
             return
@@ -76,9 +76,13 @@ final class ClaudeModeWatcher {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var modes: [TabID: ClaudeMode?] = [:]
             var activities: [TabID: ClaudeActivity] = [:]
-            for id in tabs {
+            for (id, program) in tabs {
                 guard let screen = try? Daemon.preview(workspace: id.workspace, tab: id.root)
                 else { continue }
+                if program == "codex" {
+                    if let activity = ClaudeActivity.readCodex(onScreen: screen) { activities[id] = activity }
+                    continue
+                }
                 if let declared = ClaudeMode.declared(onScreen: screen) { modes[id] = declared }
                 // A dialog in front hides the mode but is itself the answer
                 // to where the turn stands.

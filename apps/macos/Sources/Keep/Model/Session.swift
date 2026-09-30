@@ -1650,6 +1650,13 @@ final class Session {
         workspaces.flatMap(\.tabs).filter { Self.program(of: $0) == "claude" }.map(\.id)
     }
 
+    func aiTabs() -> [(TabID, String)] {
+        workspaces.flatMap(\.tabs).compactMap { tab in
+            let program = Self.program(of: tab)
+            return program == "claude" || program == "codex" ? (tab.id, program) : nil
+        }
+    }
+
     /// Whether a tab is doing something, as opposed to having something open.
     ///
     /// The daemon's `busy` is a program running in front of the shell, which
@@ -1677,7 +1684,8 @@ final class Session {
         // Tabs that are gone, or have stopped running Claude Code, lose it.
         let running = Set(claudeTabs())
         next = next.filter { running.contains($0.key) }
-        nextActivities = nextActivities.filter { running.contains($0.key) }
+        let runningAI = Set(aiTabs().map { $0.0 })
+        nextActivities = nextActivities.filter { runningAI.contains($0.key) }
         guard next != claudeModes || nextActivities != claudeActivities else { return }
         // When each tab began waiting on you, kept for as long as it waits:
         // the moment is what the badge breathes from, and a poll that finds

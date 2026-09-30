@@ -54,5 +54,15 @@ check(read(screen(status: "✻ Waiting for 1 dynamic workflow to finish", footer
 check(read(screen(status: "✻ Baked for 23s", footer: mode)) == .done, "a plain ended turn: over")
 check(read("Do you want to proceed?\n❯ 1. Yes\n  2. No\n\nEsc to cancel") == .waitingForYou, "a dialog: waiting for you")
 
+for status in ["Working", "• Working (12s • esc to interrupt)", "Working…", "Workflow"] {
+    check(ClaudeActivity.readCodex(onScreen: "Previous message\n\(status)\n\n» \n100% context left") == .waitingForWorkflow,
+          "Codex final \(status): workflow's colour")
+}
+check(ClaudeActivity.readCodex(onScreen: "• Working (12s)\nDone with the task.\n» \n100% context left") == .done,
+      "Codex old Working does not colour a later completed message")
+check(ClaudeActivity.readCodex(onScreen: "Working tree clean\n» \n100% context left") == .done,
+      "a sentence beginning Working is not the running status")
+check(ClaudeActivity.readCodex(onScreen: "Working") == nil, "Codex redraw without prompt keeps known state")
+
 print("\(cases - failures)/\(cases) ok")
 exit(failures == 0 ? 0 : 1)

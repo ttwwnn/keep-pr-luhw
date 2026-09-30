@@ -219,6 +219,25 @@ enum ClaudeActivity: Hashable {
     /// The turn is over.
     case done
 
+    /// Codex's final status above its prompt uses the same blue as a Claude
+    /// workflow while it says Working. Older mentions in the transcript do
+    /// not keep the colour after a later message has arrived.
+    static func readCodex(onScreen text: String) -> ClaudeActivity? {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let prompt = lines.lastIndex(where: { $0.hasPrefix("»") || $0.hasPrefix("›") })
+        else { return nil }
+        let conversation = lines[..<prompt].filter {
+            !$0.isEmpty && !$0.hasPrefix(String(repeating: "─", count: 12))
+        }
+        if conversation.contains(where: { $0.contains("Jump to bottom") }) { return nil }
+        guard let last = conversation.last else { return .done }
+        if last.range(of: #"^(?:[•●◦∙*]\s*)?(?:Working|Workflow)(?:\s*\(.*\)|\s*…|\s*\.{3})?\s*$"#,
+                      options: .regularExpression) != nil { return .waitingForWorkflow }
+        return lines[(prompt + 1)...].contains(where: { $0.lowercased().contains("esc to interrupt") })
+            ? .working : .done
+    }
+
     /// What the screen says, or nil when it says nothing that can be told
     /// apart — not Claude Code, or caught mid-redraw — leaving what was known
     /// before standing.
