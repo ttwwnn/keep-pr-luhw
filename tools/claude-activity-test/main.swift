@@ -63,6 +63,10 @@ check(ClaudeActivity.readCodex(onScreen: "• Working (12s)\nDone with the task.
 check(ClaudeActivity.readCodex(onScreen: "Working tree clean\n» \n100% context left") == .done,
       "a sentence beginning Working is not the running status")
 check(ClaudeActivity.readCodex(onScreen: "Working") == nil, "Codex redraw without prompt keeps known state")
+check(ClaudeActivity.readCodex(onScreen: "Working (12s • esc to interrupt)\n  └ Tip: Use /theme to choose a theme.\n› Ask Codex to do anything\nGPT-6-Astra max") == .waitingForWorkflow,
+      "Codex's UI tip below Working keeps the workflow colour")
+check(ClaudeActivity.readCodex(onScreen: "Working (12s • esc to interrupt)\n  └ Tip: Use /theme.\nDone with the task.\n› \nGPT-6-Astra max") == .done,
+      "an old tip and Working do not override a completed reply")
 
 print("\(cases - failures)/\(cases) ok")
 exit(failures == 0 ? 0 : 1)

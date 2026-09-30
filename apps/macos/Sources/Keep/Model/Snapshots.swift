@@ -227,9 +227,10 @@ enum ClaudeActivity: Hashable {
             .map { $0.trimmingCharacters(in: .whitespaces) }
         guard let prompt = lines.lastIndex(where: { $0.hasPrefix("»") || $0.hasPrefix("›") })
         else { return nil }
-        let conversation = lines[..<prompt].filter {
+        var conversation = lines[..<prompt].filter {
             !$0.isEmpty && !$0.hasPrefix(String(repeating: "─", count: 12))
         }
+        if conversation.last?.hasPrefix("└ Tip:") == true { conversation.removeLast() }
         if conversation.contains(where: { $0.contains("Jump to bottom") }) { return nil }
         guard let last = conversation.last else { return .done }
         if last.range(of: #"^(?:[•●◦∙*]\s*)?(?:Working|Workflow)(?:\s*\(.*\)|\s*…|\s*\.{3})?\s*$"#,
