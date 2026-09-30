@@ -471,6 +471,10 @@ window_id=$("$MOUSE" windows | awk 'NR==1 {print $1}')
 if [ -n "$window_id" ]; then
     /usr/sbin/screencapture -x -l "$window_id" "$WORK/codex-questions.png" 2>/dev/null || true
 fi
+printf 'Working (12s • esc to interrupt)\n• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ Minha pergunta?\n» \n' >"$WORK/bin/codex.screen"
+check "a queued user question clears the orange alert" no "$(until_text 'Codex is waiting for you' no)"
+printf '• Qual opção você prefere?\n» \n' >"$WORK/bin/codex.screen"
+check "a subsequent Codex question restores the orange alert" yes "$(until_text 'Codex is waiting for you')"
 printf '• Working (12s)\n» \n' >"$WORK/bin/codex.screen"
 sleep 3
 check "answered questions no longer ask for the user" no "$(until_text 'Codex is waiting for you' no)"

@@ -87,5 +87,32 @@ for completed in [
 check(ClaudeActivity.readCodex(onScreen: "Jump to bottom\nOld question\n› 1. Yes\nenter continue") == nil,
       "scrolled history does not change the current activity")
 
+let queuedHeading = "• Messages to be submitted after next tool call (press esc to interrupt and send immediately)"
+for queued in [
+    "  ↳ Minha pergunta?",
+    "  ↳ Primeira pergunta?\n  ↳ Outra pergunta\n    em duas linhas?",
+    "  ↳ Uma pergunta com lista:\n    • Este item está correto?"
+] {
+    check(ClaudeActivity.readCodex(onScreen: "• Resposta anterior.\nWorking (12s • esc to interrupt)\n\(queuedHeading)\n\(queued)\n› \nGPT-6") == .waitingForWorkflow,
+          "queued user questions keep Working blue")
+}
+check(ClaudeActivity.readCodex(onScreen: "\(queuedHeading)\n  ↳ Minha pergunta?\n› ") == .working,
+      "queue without a visible status still means working")
+for sent in [
+    "› Minha pergunta?",
+    "› Minha pergunta\n  em duas linhas?",
+    "› 1. Minha pergunta numerada?",
+    "› Confira esta lista:\n  • Este item está correto?"
+] {
+    check(ClaudeActivity.readCodex(onScreen: "• Deseja continuar?\n\(sent)\n› ") == .done,
+          "a newer user message clears the previous assistant question")
+}
+check(ClaudeActivity.readCodex(onScreen: "• Resposta anterior.\n  ↳ Minha pergunta?\n› ") != .waitingForYou,
+      "queued user marker is never an assistant question")
+check(ClaudeActivity.readCodex(onScreen: "• Deseja continuar?\n› Sim\n• Qual opção você prefere?\n› ") == .waitingForYou,
+      "a new assistant question after the user's answer still waits")
+check(ClaudeActivity.readCodex(onScreen: "\(queuedHeading)\n  ↳ Minha pergunta?\n• Concluído.\n› ") == .done,
+      "an old queue does not override a later assistant answer")
+
 print("\(cases - failures)/\(cases) ok")
 exit(failures == 0 ? 0 : 1)

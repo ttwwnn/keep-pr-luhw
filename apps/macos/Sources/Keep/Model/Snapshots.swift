@@ -223,8 +223,8 @@ enum ClaudeActivity: Hashable {
     /// workflow while it says Working. Older mentions in the transcript do
     /// not keep the colour after a later message has arrived.
     static func readCodex(onScreen text: String) -> ClaudeActivity? {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+        let rawLines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let lines = rawLines.map { $0.trimmingCharacters(in: .whitespaces) }
         if lines.contains(where: { $0.contains("Jump to bottom") }) { return nil }
         func choice(_ line: String) -> Bool {
             line.range(of: #"^[❯›»]\s*\d+[.)]\s+"#, options: .regularExpression) != nil
@@ -238,21 +238,32 @@ enum ClaudeActivity: Hashable {
                 options: .regularExpression) != nil
         }) { return .waitingForYou }
         guard let prompt = input else { return nil }
-        var conversation = lines[..<prompt].filter {
+        // Codex puts queued USER messages below Working, under a bullet
+        // heading of its own. That footer is not an assistant reply.
+        let queue = rawLines[..<prompt].lastIndex {
+            $0.hasPrefix("• Messages to be submitted after next tool call")
+        }.flatMap { start -> Int? in
+            rawLines[(start + 1)..<prompt].allSatisfy {
+                $0.trimmingCharacters(in: .whitespaces).isEmpty || $0.first?.isWhitespace == true
+            } ? start : nil
+        }
+        let end = queue ?? prompt
+        var conversation = lines[..<end].filter {
             !$0.isEmpty && !$0.hasPrefix(String(repeating: "─", count: 12))
         }
         if conversation.last?.hasPrefix("└ Tip:") == true { conversation.removeLast() }
-        guard let last = conversation.last else { return .done }
+        guard let last = conversation.last else { return queue == nil ? .done : .working }
         if last.range(of: #"^(?:[•●◦∙*]\s*)?(?:Working|Workflow)(?:\s*\(.*\)|\s*…|\s*\.{3})?\s*$"#,
                       options: .regularExpression) != nil { return .waitingForWorkflow }
-        if lines[(prompt + 1)...].contains(where: { $0.lowercased().contains("esc to interrupt") }) {
+        if queue != nil || lines[(prompt + 1)...].contains(where: { $0.lowercased().contains("esc to interrupt") }) {
             return .working
         }
         // A direct question in the final assistant reply also needs an
         // answer. Never infer this from quoted examples or the user's box.
-        if let reply = conversation.lastIndex(where: { $0.hasPrefix("• ") }) {
-            let message = conversation[reply...]
-            if last.hasSuffix("?"), !last.hasPrefix(">"), !last.hasPrefix("$"),
+        let user = rawLines[..<end].lastIndex { $0.hasPrefix("›") || $0.hasPrefix("»") } ?? -1
+        if let reply = rawLines[..<end].lastIndex(where: { $0.hasPrefix("• ") }), reply > user {
+            let message = lines[reply..<end]
+            if last.hasSuffix("?"), ![">", "$", "↳", "›", "»"].contains(where: { last.hasPrefix($0) }),
                message.filter({ $0.hasPrefix("```") }).count.isMultiple(of: 2) {
                 return .waitingForYou
             }
