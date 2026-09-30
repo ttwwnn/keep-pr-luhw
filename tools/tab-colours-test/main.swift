@@ -63,6 +63,12 @@ let grounds: [(dark: Bool, name: String, colour: NSColor)] = [
 ]
 
 for dark in [true, false] {
+    check(distance(Attention.titleInk(selected: true), Attention.titleInk(selected: false)) >= 0.04,
+          "selection changes the waiting title's tone")
+    check(contrast(Attention.selectionEdge(dark: dark), Attention.fill(dark: dark)) >= 2,
+          "selection outline is visible over the orange badge")
+    check(contrast(Attention.titleInk(selected: false), Attention.fill(dark: dark)) >= 4.5,
+          "unselected waiting title remains readable")
     let theme = dark ? "dark" : "light"
     var inks: [(String, NSColor)] = ClaudeMode.allCases.map { ("\($0)", $0.color(dark: dark)) }
     for activity in [ClaudeActivity.waitingForWorkflow, .done] {

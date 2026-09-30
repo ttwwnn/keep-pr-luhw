@@ -284,6 +284,15 @@ extension ClaudeActivity {
 /// badge on one clock, so three tabs waiting pulse as one signal rather
 /// than as three.
 enum Attention {
+    /// Selected titles keep full contrast; the other orange badges are softer.
+    static func titleInk(selected: Bool) -> NSColor {
+        selected ? ink : ink.blended(withFraction: 0.22, of: srgb(150, 70, 15))!
+    }
+
+    static func selectionEdge(dark: Bool) -> NSColor {
+        dark ? srgb(255, 255, 255) : srgb(40, 30, 20)
+    }
+
     /// The badge's ground: Claude Code's vivid orange, its dark theme's on a
     /// dark ground and its light theme's on a light one.
     static func fill(dark: Bool) -> NSColor {

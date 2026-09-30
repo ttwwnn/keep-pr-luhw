@@ -225,18 +225,39 @@ enum ClaudeActivity: Hashable {
     static func readCodex(onScreen text: String) -> ClaudeActivity? {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
             .map { $0.trimmingCharacters(in: .whitespaces) }
-        guard let prompt = lines.lastIndex(where: { $0.hasPrefix("»") || $0.hasPrefix("›") })
-        else { return nil }
+        if lines.contains(where: { $0.contains("Jump to bottom") }) { return nil }
+        func choice(_ line: String) -> Bool {
+            line.range(of: #"^[❯›»]\s*\d+[.)]\s+"#, options: .regularExpression) != nil
+        }
+        let input = lines.lastIndex(where: { ($0.hasPrefix("»") || $0.hasPrefix("›")) && !choice($0) })
+        let footer = input.map { Array(lines.dropFirst($0 + 1)) } ?? lines
+        let tail = footer.filter { !$0.isEmpty }.suffix(12)
+        if tail.contains(where: { line in
+            choice(line) || line.range(
+                of: #"(?i)\benter\b.{0,16}\b(confirm|submit|continue)\b|\besc(?:ape)?\s+(?:to\s+)?(?:cancel|back)\b"#,
+                options: .regularExpression) != nil
+        }) { return .waitingForYou }
+        guard let prompt = input else { return nil }
         var conversation = lines[..<prompt].filter {
             !$0.isEmpty && !$0.hasPrefix(String(repeating: "─", count: 12))
         }
         if conversation.last?.hasPrefix("└ Tip:") == true { conversation.removeLast() }
-        if conversation.contains(where: { $0.contains("Jump to bottom") }) { return nil }
         guard let last = conversation.last else { return .done }
         if last.range(of: #"^(?:[•●◦∙*]\s*)?(?:Working|Workflow)(?:\s*\(.*\)|\s*…|\s*\.{3})?\s*$"#,
                       options: .regularExpression) != nil { return .waitingForWorkflow }
-        return lines[(prompt + 1)...].contains(where: { $0.lowercased().contains("esc to interrupt") })
-            ? .working : .done
+        if lines[(prompt + 1)...].contains(where: { $0.lowercased().contains("esc to interrupt") }) {
+            return .working
+        }
+        // A direct question in the final assistant reply also needs an
+        // answer. Never infer this from quoted examples or the user's box.
+        if let reply = conversation.lastIndex(where: { $0.hasPrefix("• ") }) {
+            let message = conversation[reply...]
+            if last.hasSuffix("?"), !last.hasPrefix(">"), !last.hasPrefix("$"),
+               message.filter({ $0.hasPrefix("```") }).count.isMultiple(of: 2) {
+                return .waitingForYou
+            }
+        }
+        return .done
     }
 
     /// What the screen says, or nil when it says nothing that can be told
@@ -796,6 +817,8 @@ struct SessionSnapshot: Hashable {
         /// Whether its AI and account can be chosen from here: `keep-ia`,
         /// the helper outside the app, is installed.
         let offersAccounts: Bool
+        /// Verified account for this tab's current program, used by the footer.
+        var usageAccount: String? = nil
     }
 
     struct StripItem: Hashable, Identifiable {

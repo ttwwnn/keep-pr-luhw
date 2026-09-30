@@ -9,6 +9,7 @@
 //   axpress <app name> pick <title>           choose an item of the menu that is open
 //   axpress <app name> cancel                 put the menu that is open away
 //   axpress <app name> frame <label>          "x y w h" of an element, screen points from the top left
+//   axpress <app name> value <label>          accessibility value of an element
 //
 // A button is looked for in every window of the app, sheets included, which
 // is where a question before closing lives. Exits 0 when it did what it was
@@ -25,7 +26,7 @@ import ApplicationServices
 let arguments = CommandLine.arguments
 let usage = """
     usage: axpress <app> menu <menu> <item> | button <title> | press <label> | open <label>
-                   | items | pick <title> | cancel | frame <label>
+                   | items | pick <title> | cancel | frame <label> | value <label>
 
     """
 guard arguments.count >= 3 else {
@@ -218,6 +219,11 @@ case "frame" where arguments.count >= 4:
     if let value = attribute(target, "AXPosition") { AXValueGetValue(value as! AXValue, .cgPoint, &origin) }
     if let value = attribute(target, "AXSize") { AXValueGetValue(value as! AXValue, .cgSize, &size) }
     print("\(Int(origin.x.rounded())) \(Int(origin.y.rounded())) \(Int(size.width.rounded())) \(Int(size.height.rounded()))")
+
+case "value" where arguments.count >= 4:
+    guard let target = element(labelled: arguments[3]),
+          let value = attribute(target, "AXValue") as? String else { exit(1) }
+    print(value)
 
 default:
     FileHandle.standardError.write(usage.data(using: .utf8)!)

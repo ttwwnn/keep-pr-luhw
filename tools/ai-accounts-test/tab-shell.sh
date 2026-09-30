@@ -13,6 +13,7 @@ if [ -n "${AI_TEST_QUEUE:-}" ] && [ -s "$AI_TEST_QUEUE" ]; then
 fi
 case "$next" in
     claude) exec "$AI_TEST_BIN/claude" ;;
+    codex) exec "$AI_TEST_BIN/codex" ;;
     sleep) exec /bin/sleep 100000 ;;
     *) exec /bin/zsh -f -i ;;
 esac

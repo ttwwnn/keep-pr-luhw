@@ -491,6 +491,7 @@ struct UsageFooter: View {
     /// This window's channel to the session: a login opened from here opens
     /// in the workspace this window is in.
     let dispatch: (Intent) -> Void
+    var selectedAccount: String? = nil
     /// Quiet at rest, legible under the pointer (PRODUCT.md).
     @State private var hoverFold = false
     @State private var hoverMeasure = false
@@ -608,7 +609,7 @@ struct UsageFooter: View {
     /// `keep-ia` is here to keep the order: without it the footer is as it
     /// always was.
     private func heading(_ text: String, _ line: AccountUsage, at index: Int) -> Text {
-        let name = Text(text).foregroundColor(line.account.isActive ? UsageInk.ink : UsageInk.inkResting)
+        let name = Text(text).foregroundColor(line.account.isUsed(by: selectedAccount) ? UsageInk.ink : UsageInk.inkResting)
         guard monitor.helperAvailable else { return name }
         return Text("\(index + 1) · ").foregroundColor(UsageInk.inkFaint) + name
     }
@@ -623,11 +624,13 @@ struct UsageFooter: View {
                         .font(numbers)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if line.account.isActive && line.account.engine == .claude {
+                    if line.account.isUsed(by: selectedAccount) {
                         Circle()
                             .fill(UsageInk.live)
                             .frame(width: 5, height: 5)
-                            .help("The account the tabs are running on")
+                            .help("Account used by this tab")
+                            .accessibilityLabel("Account used by this tab")
+                            .accessibilityIdentifier("usage-active-\(line.account.order)")
                     }
                     Spacer(minLength: 0)
                 }
@@ -806,8 +809,8 @@ struct UsageFooter: View {
         if line.account.aliases.count > 1 {
             lines.append("In the vault as: " + line.account.aliases.joined(separator: ", "))
         }
-        if line.account.isActive && line.account.engine == .claude {
-            lines.append("In use by the tabs")
+        if line.account.isUsed(by: selectedAccount) {
+            lines.append("Account used by this tab")
         }
         if let at = line.measuredAt { lines.append("Measured \(UsageText.ago(at, now: now))") }
         return lines.joined(separator: "\n")

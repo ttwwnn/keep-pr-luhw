@@ -136,6 +136,7 @@ enum Daemon {
     /// The daemon is not a child of this app: it has to outlive every client,
     /// including the window that happened to launch it.
     static func ensureRunning() throws {
+        try KeepStateFile.validateConnection(socket: socketPath, directory: stateDirectory())
         if let fd = try? connect() {
             close(fd)
             return

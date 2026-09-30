@@ -1,4 +1,147 @@
 import Foundation
+import CryptoKit
+import Darwin
+
+/// State replacements retain their previous bytes. A failed backup or an
+/// unreadable source cancels the write; recovery copies are never pruned.
+enum KeepStateFile {
+    struct Failure: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    static var productionDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Keep", isDirectory: true)
+    }
+
+    static func validateConnection(socket: String, directory: URL) throws {
+        let count = confstr(_CS_DARWIN_USER_TEMP_DIR, nil, 0)
+        guard count > 0 else { throw Failure(message: "Could not identify the main Keep state.") }
+        var buffer = [CChar](repeating: 0, count: count)
+        guard confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, count) > 0 else {
+            throw Failure(message: "Could not identify the main Keep socket.")
+        }
+        let expected = URL(fileURLWithPath: String(cString: buffer))
+            .appendingPathComponent("keep-\(NSUserName()).sock").resolvingSymlinksInPath().path
+        let actual = URL(fileURLWithPath: socket).resolvingSymlinksInPath().path
+        let state = directory.resolvingSymlinksInPath().path
+        let real = productionDirectory.resolvingSymlinksInPath().path
+        if actual != expected && (state == real || state.hasPrefix(real + "/")) {
+            throw Failure(message: "Alternate connection refused: set KEEP_STATE_DIR outside the main Keep state. Your data was preserved.")
+        }
+    }
+
+    private static func recovery(_ file: URL) -> URL {
+        file.deletingLastPathComponent().appendingPathComponent("recovery", isDirectory: true)
+            .appendingPathComponent(file.lastPathComponent, isDirectory: true)
+    }
+
+    private static func archive(_ data: Data, from file: URL) throws {
+        let folder = recovery(file)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let copy = folder.appendingPathComponent(digest + ".json")
+        if FileManager.default.fileExists(atPath: copy.path) {
+            guard try Data(contentsOf: copy) == data else { throw Failure(message: "Invalid recovery copy.") }
+        } else {
+            try data.write(to: copy, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: copy.path)
+            let handle = try FileHandle(forWritingTo: copy)
+            defer { try? handle.close() }
+            try handle.synchronize()
+        }
+        // A repeated state is the most recent usable recovery too.
+        try FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: copy.path)
+        try synchronize(folder)
+        try synchronize(folder.deletingLastPathComponent())
+        try synchronize(file.deletingLastPathComponent())
+    }
+
+    static func read(_ file: URL) -> Data? {
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        if (try? JSONSerialization.jsonObject(with: data)) != nil { return data }
+        let copies = (try? FileManager.default.contentsOfDirectory(
+            at: recovery(file), includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for copy in copies.sorted(by: { (FileStamp(of: $0).modified ?? .distantPast)
+            > (FileStamp(of: $1).modified ?? .distantPast) }) {
+            guard let saved = try? Data(contentsOf: copy),
+                  (try? JSONSerialization.jsonObject(with: saved)) != nil else { continue }
+            do {
+                try replace(saved, at: file, recovering: true, expected: data)
+                return saved
+            } catch { report(error, file: file); return nil }
+        }
+        return nil
+    }
+
+    @discardableResult
+    static func write<T: Encodable>(_ value: T, to file: URL,
+                                    namesExcept: Set<String>? = nil, workspace: String? = nil) -> Bool {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            try replace(encoder.encode(value), at: file, namesExcept: namesExcept, workspace: workspace)
+            return true
+        } catch { report(error, file: file); return false }
+    }
+
+    private static func replace(_ proposed: Data, at file: URL, recovering: Bool = false,
+                                namesExcept: Set<String>? = nil, workspace: String? = nil,
+                                expected: Data? = nil) throws {
+        let folder = file.deletingLastPathComponent()
+        try validateConnection(socket: Daemon.socketPath, directory: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let lock = open(folder.appendingPathComponent(".state.lock").path, O_CREAT | O_RDWR, 0o600)
+        guard lock >= 0 else { throw Failure(message: "Could not lock the state for writing.") }
+        defer { flock(lock, LOCK_UN); close(lock) }
+        guard flock(lock, LOCK_EX) == 0 else { throw Failure(message: "State in use; write cancelled.") }
+        var data = proposed
+        if FileManager.default.fileExists(atPath: file.path) {
+            let old = try Data(contentsOf: file)
+            if let expected, expected != old {
+                throw Failure(message: "State changed by another process; recovery deferred.")
+            }
+            if !recovering && (try? JSONSerialization.jsonObject(with: old)) == nil {
+                throw Failure(message: "Invalid state preserved; writes require recovery first.")
+            }
+            if let touched = namesExcept,
+               let before = try? JSONSerialization.jsonObject(with: old) as? [String: Any],
+               var after = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let was = before["daemonStart"] as? Double, let now = after["daemonStart"] as? Double,
+               abs(was - now) < 0.001 {
+                var tabs = after["tabs"] as? [String: String] ?? [:]
+                let fresh = before["tabs"] as? [String: String] ?? [:]
+                for key in Set(tabs.keys).union(fresh.keys) where !touched.contains(key) { tabs[key] = fresh[key] }
+                var spaces = after["workspaces"] as? [String: String] ?? [:]
+                let freshSpaces = before["workspaces"] as? [String: String] ?? [:]
+                for key in Set(spaces.keys).union(freshSpaces.keys) where key != workspace { spaces[key] = freshSpaces[key] }
+                after["tabs"] = tabs
+                after["workspaces"] = spaces
+                data = try JSONSerialization.data(withJSONObject: after, options: [.sortedKeys])
+            }
+            if old != data { try archive(old, from: file) }
+        }
+        try data.write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        let handle = try FileHandle(forWritingTo: file)
+        defer { try? handle.close() }
+        try handle.synchronize()
+        try synchronize(folder)
+    }
+
+    private static func synchronize(_ folder: URL) throws {
+        let descriptor = open(folder.path, O_RDONLY)
+        guard descriptor >= 0 else { throw Failure(message: "Recovery directory is inaccessible.") }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else { throw Failure(message: "Recovery copy could not be synchronized to disk.") }
+    }
+
+    private static func report(_ error: Error, file: URL) {
+        NSLog("Keep: %@ preserved: %@", file.lastPathComponent, error.localizedDescription)
+    }
+}
 
 /// Where this app keeps what it remembers between launches.
 ///
@@ -46,7 +189,7 @@ final class SidebarStateStore {
     init(directory: URL? = nil) {
         let dir = directory ?? stateDirectory()
         file = dir.appendingPathComponent("sidebar-state.json")
-        let data = (try? Data(contentsOf: file)) ?? Data()
+        let data = KeepStateFile.read(file) ?? Data()
         if let keyed = try? JSONDecoder().decode([Int: SidebarState].self, from: data) {
             states = keyed
         } else if let bare = try? JSONDecoder().decode(SidebarState.self, from: data) {
@@ -78,9 +221,7 @@ final class SidebarStateStore {
     }
 
     private func write() {
-        try? FileManager.default.createDirectory(
-            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(states).write(to: file, options: .atomic)
+        KeepStateFile.write(states, to: file)
     }
 
     private func scheduleWrite() {
@@ -121,7 +262,7 @@ final class TabOrderStore {
     init(directory: URL? = nil) {
         let dir = directory ?? stateDirectory()
         file = dir.appendingPathComponent("tab-order.json")
-        let data = (try? Data(contentsOf: file)) ?? Data()
+        let data = KeepStateFile.read(file) ?? Data()
         if let contents = try? JSONDecoder().decode(Contents.self, from: data) {
             order = contents.order
             daemonStart = contents.daemonStart
@@ -168,10 +309,7 @@ final class TabOrderStore {
     }
 
     private func write() {
-        try? FileManager.default.createDirectory(
-            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(Contents(daemonStart: daemonStart, order: order))
-            .write(to: file, options: .atomic)
+        KeepStateFile.write(Contents(daemonStart: daemonStart, order: order), to: file)
     }
 }
 
@@ -221,7 +359,7 @@ final class PutAwayStore {
     init(directory: URL? = nil) {
         let dir = directory ?? stateDirectory()
         file = dir.appendingPathComponent("put-away.json")
-        let data = (try? Data(contentsOf: file)) ?? Data()
+        let data = KeepStateFile.read(file) ?? Data()
         if let decoded = try? JSONDecoder().decode(Contents.self, from: data) {
             contents = decoded
         } else if let bare = try? JSONDecoder().decode([String].self, from: data) {
@@ -276,9 +414,7 @@ final class PutAwayStore {
     }
 
     private func write() {
-        try? FileManager.default.createDirectory(
-            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(contents).write(to: file, options: .atomic)
+        KeepStateFile.write(contents, to: file)
     }
 }
 
@@ -324,7 +460,7 @@ final class NameStore {
         let dir = directory ?? stateDirectory()
         file = dir.appendingPathComponent("names.json")
         stamp = FileStamp(of: file)
-        contents = (try? JSONDecoder().decode(Contents.self, from: Data(contentsOf: file)))
+        contents = KeepStateFile.read(file).flatMap { try? JSONDecoder().decode(Contents.self, from: $0) }
             ?? Contents()
     }
 
@@ -343,7 +479,7 @@ final class NameStore {
         let now = FileStamp(of: file)
         guard now != stamp else { return false }
         stamp = now
-        guard let data = try? Data(contentsOf: file),
+        guard let data = KeepStateFile.read(file),
               let fresh = try? JSONDecoder().decode(Contents.self, from: data)
         else { return false }
         if let theirs = fresh.daemonStart, let start = daemonStart?.timeIntervalSince1970,
@@ -398,9 +534,10 @@ final class NameStore {
     /// `touching`: the names this write changes, which win over the file's.
     private func write(touching: Set<String> = [], touchingWorkspace: String? = nil) {
         absorb(except: touching, workspace: touchingWorkspace)
-        try? FileManager.default.createDirectory(
-            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(contents).write(to: file, options: .atomic)
+        guard KeepStateFile.write(contents, to: file, namesExcept: touching, workspace: touchingWorkspace) else { return }
+        if let saved = KeepStateFile.read(file), let merged = try? JSONDecoder().decode(Contents.self, from: saved) {
+            contents = merged
+        }
         stamp = FileStamp(of: file)
     }
 
@@ -469,9 +606,9 @@ final class WindowStateStore {
     init(directory: URL? = nil) {
         let dir = directory ?? stateDirectory()
         file = dir.appendingPathComponent("windows.json")
-        records = (try? JSONDecoder().decode(
-            [Int: WindowRecord].self, from: Data(contentsOf: file)
-        )) ?? [:]
+        records = KeepStateFile.read(file).flatMap {
+            try? JSONDecoder().decode([Int: WindowRecord].self, from: $0)
+        } ?? [:]
     }
 
     /// The slots to open, lowest first. Slot 0 is always among them: the app
@@ -500,8 +637,6 @@ final class WindowStateStore {
     }
 
     private func write() {
-        try? FileManager.default.createDirectory(
-            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? JSONEncoder().encode(records).write(to: file, options: .atomic)
+        KeepStateFile.write(records, to: file)
     }
 }

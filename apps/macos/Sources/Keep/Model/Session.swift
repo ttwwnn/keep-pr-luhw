@@ -1925,7 +1925,10 @@ final class Session {
                         claudeActivity: claudeActivities[tab.id],
                         wantsYouSince: waitingSince[tab.id],
                         account: aiAccount(of: tab),
-                        offersAccounts: aiHelperPresent
+                        offersAccounts: aiHelperPresent,
+                        usageAccount: aiAccounts.confirmedAccount(
+                            workspace: tab.id.workspace, tab: tab.id.root,
+                            program: AIProgramKind(command: Self.program(of: tab)))
                     )
                 },
                 expanded: !sidebar.folded.contains(workspace.name)

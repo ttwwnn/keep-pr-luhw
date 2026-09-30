@@ -102,6 +102,7 @@ final class AITabAccounts {
     private let file: URL
     /// The file and the daemon it was last read against.
     private var seen: String?
+    private var seenDaemon: Date?
 
     init(directory: URL? = nil) {
         file = (directory ?? Self.directory()).appendingPathComponent("retrato.json")
@@ -122,10 +123,11 @@ final class AITabAccounts {
     /// Read the file again if it changed, or if the daemon did. True when
     /// what some tab shows has changed.
     func reload(daemonStart: Date?) -> Bool {
+        let before = shown
+        if seenDaemon != daemonStart { notes.removeAll(); seenDaemon = daemonStart }
         let now = AIAccounts.stamp(file) + " @" + (daemonStart.map { "\($0.timeIntervalSince1970)" } ?? "-")
         guard now != seen else { return false }
         seen = now
-        let before = shown
         let read = (try? Data(contentsOf: file)).flatMap { Self.parse($0, daemonStart: daemonStart) }
         entries = Dictionary(
             (read?.entries ?? []).map { (Self.id($0.workspace, $0.tab), $0) },
@@ -159,6 +161,16 @@ final class AITabAccounts {
         case .codex: return AIEngine.codex.key(AIAccounts.codexOwnSlot)
         default: return nil
         }
+    }
+
+    /// Only a recorded account of the program actually on screen may light
+    /// the usage footer. A stale Claude record must not label a new Codex.
+    func confirmedAccount(workspace: String, tab: UInt32, program: AIProgramKind) -> String? {
+        guard program == .claude || program == .codex else { return nil }
+        let id = Self.id(workspace, tab)
+        guard let key = notes[id]?.key ?? entries[id]?.key else { return nil }
+        let prefix = program == .codex ? "gpt:" : "claude:"
+        return key.hasPrefix(prefix) ? key : nil
     }
 
     /// What the tabs show, for telling whether a read changed it.

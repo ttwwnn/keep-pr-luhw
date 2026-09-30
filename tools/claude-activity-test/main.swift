@@ -68,5 +68,24 @@ check(ClaudeActivity.readCodex(onScreen: "Working (12s • esc to interrupt)\n  
 check(ClaudeActivity.readCodex(onScreen: "Working (12s • esc to interrupt)\n  └ Tip: Use /theme.\nDone with the task.\n› \nGPT-6-Astra max") == .done,
       "an old tip and Working do not override a completed reply")
 
+for dialog in [
+    "Escolha uma opção\n» 1. Continuar\n  2. Parar\nenter to submit · esc to interrupt",
+    "Would you like to run this command?\n› 1. Yes\n  2. No\nenter continue · esc back",
+    "Question 1/2\nDigite a resposta\nEnter to submit · Esc to cancel",
+    "• Deseja continuar?\n» "
+] {
+    check(ClaudeActivity.readCodex(onScreen: dialog) == .waitingForYou, "Codex question waits for the user")
+}
+for completed in [
+    "• Deseja continuar?\n• Concluído.\n» ",
+    "Old dialog\n› 1. Yes\nEnter to submit\n• Cancelled.\n» ",
+    "• Exemplo:\n```sh\necho ?\n```\n» ",
+    "• Pronto.\n» Minha pergunta?"
+] {
+    check(ClaudeActivity.readCodex(onScreen: completed) == .done, "Codex old dialog or typed question is not pending")
+}
+check(ClaudeActivity.readCodex(onScreen: "Jump to bottom\nOld question\n› 1. Yes\nenter continue") == nil,
+      "scrolled history does not change the current activity")
+
 print("\(cases - failures)/\(cases) ok")
 exit(failures == 0 ? 0 : 1)

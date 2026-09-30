@@ -325,7 +325,7 @@ next_call "$before" >/dev/null
 until_text "Interrupt and Switch Now" >/dev/null
 before=$(ncalls)
 "$AXPRESS" "$APP_NAME" button Cancel
-sleep 1.5
+check "Cancel dismisses the question" no "$(until_text "Interrupt and Switch Now" no)"
 check "Cancel asks nothing more" "$before" "$(ncalls)"
 rm -f "$WORK/ia/busy"
 
@@ -409,5 +409,75 @@ check "no way to sign in from the footer" no "$(has "Sign in to another account"
 check "and no arrows" no "$(has "Move Claude")"
 
 say ""
+say "Codex questions and the selected tab's account"
+cc -O -o "$WORK/bin/codex" tools/ai-accounts-test/fake-codex.c || exit 1
+printf 'Choose an option\n» 1. Continue\n  2. Stop\nenter to submit · esc to interrupt\n' >"$WORK/bin/codex.screen"
+for n in 1 2; do
+    echo codex >>"$WORK/queue"
+    "$KEEP" new "$WS" >/dev/null || exit 1
+    sleep 1
+done
+python3 - "$WORK/daemon.log" "$WORK/helper-state/retrato.json" "$WORK/codex-tabs" "$WS" "$SOCKET" <<'PYFIX'
+import json,os,sys,time
+# Tab ids are allocated monotonically; the existing test has exactly two new Codex tabs.
+# Read them from the daemon's own List2 protocol (0x0d).
+import socket,struct
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.connect(sys.argv[5]);s.sendall(bytes([0x0d])+struct.pack('>I',0))
+def take(n):
+    b=b''
+    while len(b)<n:
+        c=s.recv(n-len(b))
+        if not c:raise RuntimeError('short list')
+        b+=c
+    return b
+header=take(5);data=take(struct.unpack('>I',header[1:])[0]);s.close()
+pos=0
+def integer(n):
+    global pos
+    v=int.from_bytes(data[pos:pos+n],'big');pos+=n;return v
+def string():
+    global pos
+    n=integer(4);v=data[pos:pos+n].decode();pos+=n;return v
+ids=[]
+for _ in range(integer(4)):
+    ws=string()
+    for _ in range(integer(4)):
+        tab=integer(4);integer(2);integer(2);integer(4);integer(1);string();integer(1);integer(4);integer(1)
+        string();integer(8);command=string()
+        if ws==sys.argv[4] and command=='codex':ids.append(tab)
+assert len(ids)==2,ids
+p=sys.argv[2];d=json.load(open(p));d['gravado_em_ms']=int(time.time()*1000)
+d['ia'] = [e for e in d['ia'] if not (e['workspace']==sys.argv[4] and e['aba']==2)]
+d['ia'].append({'workspace':sys.argv[4],'aba':2,'agente':'claude','conta':'claude:spare','vinculo':'exato'})
+d['ia'] += [{'workspace':sys.argv[4],'aba':tab,'agente':'codex','conta':'gpt:principal','vinculo':'exato'} for tab in ids]
+with open(p+'.tmp','w') as f:json.dump(d,f)
+os.replace(p+'.tmp',p)
+with open(sys.argv[3],'w') as f:f.write(' '.join(map(str,ids)))
+PYFIX
+read -r codex_one codex_two <"$WORK/codex-tabs"
+sleep 3
+"$AXPRESS" "$APP_NAME" press "strip-tab-$WS/$codex_one"
+sleep 2
+check "Codex question is announced as waiting" yes "$(until_text 'Codex is waiting for you')"
+check "first waiting tab is selected" selected "$("$AXPRESS" "$APP_NAME" value "strip-tab-$WS/$codex_one")"
+check "second waiting tab is not selected" "not selected" "$("$AXPRESS" "$APP_NAME" value "strip-tab-$WS/$codex_two")"
+check "selected Codex marks the GPT account" yes "$(present 'usage-active-gpt:principal')"
+check "Claude does not keep the green mark" no "$(present 'usage-active-claude:spare')"
+"$AXPRESS" "$APP_NAME" press "strip-tab-$WS/$codex_two"
+sleep 1
+check "another waiting Codex tab can be selected" selected "$("$AXPRESS" "$APP_NAME" value "strip-tab-$WS/$codex_two")"
+check "previous waiting tab loses its selection" "not selected" "$("$AXPRESS" "$APP_NAME" value "strip-tab-$WS/$codex_one")"
+window_id=$("$MOUSE" windows | awk 'NR==1 {print $1}')
+if [ -n "$window_id" ]; then
+    /usr/sbin/screencapture -x -l "$window_id" "$WORK/codex-questions.png" 2>/dev/null || true
+fi
+printf '• Working (12s)\n» \n' >"$WORK/bin/codex.screen"
+sleep 3
+check "answered questions no longer ask for the user" no "$(until_text 'Codex is waiting for you' no)"
+"$AXPRESS" "$APP_NAME" press "strip-tab-$WS/2"
+sleep 2
+check "selecting Claude moves the mark back" yes "$(present 'usage-active-claude:spare')"
+check "unselected Codex loses the mark" no "$(present 'usage-active-gpt:principal')"
+
 say "$PASSED passed, $FAILED failed"
 [ "$FAILED" -eq 0 ]

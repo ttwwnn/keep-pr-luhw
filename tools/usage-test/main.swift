@@ -302,6 +302,12 @@ let inUse = usage(summary(.claude, "main", active: true, names: ["main", "work"]
                   [("5h", 10), ("7d", 10)])
 let refused = usage(summary(.claude, "spare", warning: "login refused: sign in again", email: "spare@example.com"),
                     read: false)
+check(gptMain.account.isUsed(by: "gpt:principal"), "indicator: selected Codex account uses its slot")
+check(!inUse.account.isUsed(by: "gpt:principal"), "indicator: active Claude does not label Codex")
+check(inUse.account.isUsed(by: "claude:ordem"), "indicator: Claude following the order resolves its active account")
+check(!gptMain.account.isUsed(by: "claude:ordem"), "indicator: Claude order does not label Codex")
+check(inUse.account.isUsed(by: "claude:work"), "indicator: another slot of the same account")
+check(!inUse.account.isUsed(by: nil) && !gptMain.account.isUsed(by: nil), "indicator: no known account means no mark")
 let queue = [full, gptMain, inUse, refused]
 let claudeRows = AIChoices.rows(lines: queue, current: "claude:spare", program: .claude)
 check(claudeRows.map(\.kind) == [.follow, .separator, .account, .account, .account, .account],
@@ -417,6 +423,10 @@ MainActor.assumeIsolated {
     writeRetrato(start: daemonStart.timeIntervalSince1970, writtenMs: nowMs + 7000, entries: tabEntries)
     _ = store.reload(daemonStart: daemonStart)
     check(store.account(workspace: "w", tab: 3, program: .codex) == "gpt:team", "retrato: back to the right one")
+    check(store.confirmedAccount(workspace: "w", tab: 3, program: .codex) == "gpt:team", "indicator: confirmed Codex account")
+    check(store.confirmedAccount(workspace: "w", tab: 3, program: .claude) == nil, "indicator: a different engine voids the old account")
+    check(store.confirmedAccount(workspace: "w", tab: 99, program: .codex) == nil, "indicator: missing account is not assumed to be main")
+    check(store.confirmedAccount(workspace: "w", tab: 3, program: .unknown) == nil, "indicator: unknown program does not confirm an account")
     check(store.reload(daemonStart: daemonStart.addingTimeInterval(10))
           && store.account(workspace: "w", tab: 3, program: .codex) == "gpt:principal",
           "retrato: a new daemon voids what was read")

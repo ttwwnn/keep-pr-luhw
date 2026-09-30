@@ -932,6 +932,8 @@ final class TabCellView: NSView {
     /// tab asking for you is the one thing in the row that must not read as
     /// just another title.
     private let attention = NSView()
+    /// Drawn above both the alert and glass: selection is independent of activity.
+    private let selectionOutline = NSView()
     /// Until when the badge breathes, and in which colours, so that a poll
     /// which changes nothing does not start the breath over.
     private var breathing: (until: Date?, dark: Bool)?
@@ -1002,9 +1004,16 @@ final class TabCellView: NSView {
         attention.isHidden = true
         addSubview(attention)
 
+        selectionOutline.wantsLayer = true
+        selectionOutline.layer?.cornerCurve = .continuous
+        selectionOutline.isHidden = true
+        addSubview(selectionOutline)
+
         label.font = .systemFont(ofSize: 12)
         label.alignment = .center
         label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
+        label.cell?.usesSingleLineMode = true
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
 
@@ -1121,6 +1130,8 @@ final class TabCellView: NSView {
             attention.frame = fill.frame
         }
         attention.layer?.cornerRadius = radius
+        selectionOutline.frame = attention.frame
+        selectionOutline.layer?.cornerRadius = radius
         // What a tab shows is decided by how much of it there is. The number
         // is a hint and steps aside first; the close button goes next, since
         // a tab too narrow to name is not one to be closed by aim; the title
@@ -1186,7 +1197,7 @@ final class TabCellView: NSView {
             title = "✳ \(title)"
         }
         let font = NSFont.systemFont(
-            ofSize: 12, weight: wantsYou ? .semibold : item.isActive ? .medium : .regular)
+            ofSize: 12, weight: item.isActive ? .semibold : .regular)
         label.font = font
 
         // The tab you are in already answers, and a lone tab is a window
@@ -1207,6 +1218,16 @@ final class TabCellView: NSView {
         // its own: waiting on a workflow, waiting on you, or over.
         label.textColor = item.claudeActivity?.color(dark: palette.dark)
             ?? item.claudeMode?.color(dark: palette.dark) ?? ink
+        if wantsYou {
+            label.textColor = Attention.titleInk(selected: item.isActive || alone)
+        } else if !item.isActive && !alone,
+                  item.claudeActivity?.color(dark: palette.dark) != nil || item.claudeMode != nil {
+            label.textColor = label.textColor?.withAlphaComponent(0.72)
+        }
+        selectionOutline.isHidden = !item.isActive || alone
+        selectionOutline.layer?.borderWidth = wantsYou ? 2 : 1
+        selectionOutline.layer?.borderColor = (wantsYou
+            ? Attention.selectionEdge(dark: palette.dark) : palette.edge).cgColor
         hoverFill.layer?.backgroundColor = palette.hoverFill.cgColor
         offer(offering)
 
@@ -1270,11 +1291,18 @@ final class TabCellView: NSView {
                 line.append(NSAttributedString(string: "  "))
                 line.append(Self.symbol(mark, colour: colour, size: font.pointSize))
             }
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            paragraph.lineBreakMode = .byTruncatingTail
+            line.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: line.length))
             label.attributedStringValue = line
         }
 
-        let said = wantsYou ? "\(title) — Claude Code is waiting for you" : title
+        let engine = AIProgramKind(command: item.command) == .codex ? "Codex" : "Claude Code"
+        let said = wantsYou ? "\(title) — \(engine) is waiting for you" : title
         setAccessibilityLabel(said)
+        setAccessibilityValue(item.isActive ? "selected" : "not selected")
+        setAccessibilityIdentifier("strip-tab-\(item.id)")
         // Named after the tab it opens the menu of, which changes with the
         // cell's place in the row.
         accountButton.setAccessibilityLabel(

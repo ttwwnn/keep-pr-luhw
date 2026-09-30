@@ -51,6 +51,22 @@ those reached whatever Keep somebody happened to be working in.
 
 ## Folder structure
 
+User labels and arrangement are written through `KeepStateFile`. Replacements
+retain the previous bytes in private, content-addressed `recovery/<file>/`
+copies, with a shared writer lock and disk synchronization. A failed backup
+refuses the replacement; malformed JSON is recovered from the newest valid
+copy, or kept untouched when none exists. Recovery copies are not pruned.
+Daemon-specific names and ordering are never applied to another daemon's ids.
+An alternate socket cannot use the production state directory, including
+through a symlink. This guard runs before connecting or starting a daemon.
+
+The usage footer's green mark belongs to the selected tab of that window.
+It uses a recorded account matching the tab's foreground AI, not the global
+Claude vault marker alone. Unknown or transitional accounts have no mark.
+Codex questions and approvals use the same waiting state as Claude; selection
+keeps its own outline and text emphasis over an activity-coloured tab.
+
+
 ```
 apps/macos/Sources/Keep/
 ├── main.swift                    entry point, AppDelegate, menus (⌘T, ⌘W, ⌘1–9…)
