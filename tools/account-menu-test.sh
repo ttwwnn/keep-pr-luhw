@@ -15,6 +15,8 @@
 #     --aba=… --para=…`;
 #   - a tab the helper says is busy puts a question up, and "Interrupt and
 #     Switch Now" asks again with --interromper; "Cancel" asks nothing;
+#   - an account the helper has to open a login of its own for first: the
+#     tab that login is in is the one shown, under a note saying so;
 #   - a tab running some other program says so and offers nothing;
 #   - a cell of the strip reused for another tab — one before it closed —
 #     acts on the tab it shows now;
@@ -377,6 +379,22 @@ check "and does not start naming the tab" no \
     "$(grep -aqE "strip +renaming 4$" "$WORK/app.log" && echo yes || echo no)"
 check "nor is it a press on the tab, which selects or carries it" no \
     "$(grep -aqE "strip +press on 4 " "$WORK/app.log" && echo yes || echo no)"
+
+say ""
+say "an account with no login of its own for tabs yet"
+touch "$WORK/ia/needs-login"
+before=$(ncalls)
+choose "strip-ai-$WS/4" "Claude · main"
+check "the helper is asked for it all the same" \
+    "trocar --ws=$WS --aba=4 --para=claude:main --json" "$(next_call "$before")"
+check "a note says the login waits in the browser" yes "$(until_text "Approve Claude · main in the browser")"
+login_tab=$(trace "waits for a login to claude:main in $WS/" | grep -aoE "in $WS/[0-9]+" | tail -1 | sed 's#.*/##')
+check "the tab the helper opened the login in is the one shown" yes \
+    "$([ -n "$login_tab" ] && grep -aqE "switch +→ $WS/$login_tab " "$WORK/app.log" && echo yes || echo no)"
+check "and not the failure's words" no "$(has "Could not switch the tab's AI")"
+"$AXPRESS" "$APP_NAME" button OK >/dev/null 2>&1
+check "the note goes when read" no "$(until_text "Approve Claude · main in the browser" no)"
+rm -f "$WORK/ia/needs-login"
 
 say ""
 say "without the helper"

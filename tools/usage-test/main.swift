@@ -495,6 +495,19 @@ if case .success(let opened) = AIHelper.signIn(.gpt, workspace: "home") {
 check(helperCalls().last == ["entrar", "gpt", "--ws=home", "--json"], "sign in: the arguments", "\(helperCalls())")
 check(fm.fileExists(atPath: home.appendingPathComponent(".codex-contas/new/auth.json").path),
       "sign in (stand-in): the new login is on disk")
+// An account with no login of its own for tabs yet: the helper opens that
+// login in a tab and says which.
+try! "".write(toFile: fakeDir + "/needs-login", atomically: true, encoding: .utf8)
+if case .failure(let p) = AIHelper.switchAccount(workspace: "home", tab: 2, to: "claude:reserva", interrupt: false) {
+    check(p.reason == "precisa-login" && p.login?.tab == 7 && p.login?.workspace == "home",
+          "switch: precisa-login brings the login's tab and its workspace", "\(p)")
+} else { check(false, "switch: precisa-login") }
+try? fm.removeItem(atPath: fakeDir + "/needs-login")
+try! "".write(toFile: fakeDir + "/busy", atomically: true, encoding: .utf8)
+if case .failure(let p) = AIHelper.switchAccount(workspace: "home", tab: 2, to: "claude:reserva", interrupt: false) {
+    check(p.login == nil, "switch: a refusal with no login's tab makes none up", "\(p)")
+} else { check(false, "switch: busy, no login") }
+try? fm.removeItem(atPath: fakeDir + "/busy")
 // The deadline: a helper too slow is stopped at it.
 AIHelper.timeScale = 0.2
 try! "5".write(toFile: fakeDir + "/slow", atomically: true, encoding: .utf8)

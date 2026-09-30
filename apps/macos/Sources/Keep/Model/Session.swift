@@ -1106,6 +1106,23 @@ final class Session {
                     )) { [weak self] in
                         self?.switchAccount(id, to: key, label: label, interrupting: true, from: window)
                     }
+                case .failure(let problem) where problem.reason == "precisa-login":
+                    // Not a failure: the helper is waiting on a login of the
+                    // account's own, in a tab it opened, and switches this
+                    // one when that is through. That tab is where the person
+                    // goes next, so it is the one shown.
+                    let login = problem.login.map {
+                        TabID(workspace: $0.workspace ?? id.workspace, root: $0.tab)
+                    }
+                    Trace.log("ia", "\(id) waits for a login to \(key)\(login.map { " in \($0)" } ?? "")")
+                    if let login {
+                        self.refreshFromDaemon()
+                        self.activate(login, in: window)
+                        self.publish()
+                        self.renderer(window)?.focusActiveTerminal()
+                    }
+                    self.renderer(window)?.present(
+                        problem: "Approve \(label) in the browser", detail: problem.detail)
                 case .failure(let problem):
                     Trace.log("ia", "\(id) not switched (\(problem.reason ?? "?")): \(problem.detail)")
                     self.renderer(window)?.present(

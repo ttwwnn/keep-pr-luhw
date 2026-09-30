@@ -25,6 +25,10 @@ how it answers:
   slow      seconds to wait before answering anything
   fail      `ordem mover` says no
   busy      `trocar` without --interromper says the tab is busy
+  needs-login
+            `trocar` opens a tab in the workspace, as the kit does for an
+            account with no login of its own for tabs yet, and says so: the
+            motivo "precisa-login", with "aba_login" and "ws_login"
   error     `trocar` says no, with this file's text as the reason
 
 The home is KEEP_AI_USAGE_HOME and the state KIT_KEEP_ESTADO: the ones the
@@ -225,6 +229,15 @@ def trocar(argv):
         sys.exit(2)
     if os.path.exists(flag("busy")) and "--interromper" not in argv:
         refuse("ocupada", "The tab is in the middle of an answer.")
+    if os.path.exists(flag("needs-login")):
+        keep = os.environ.get("FAKE_IA_KEEP")
+        made = subprocess.run([keep, "new", workspace], capture_output=True, text=True) if keep else None
+        found = re.search(r"opened tab (\d+)", made.stdout) if made else None
+        if not found:
+            refuse("erro", "could not open the login's tab")
+        answer({"motivo": "precisa-login", "aba_login": int(found.group(1)), "ws_login": workspace,
+                "detalhe": "The account has no login of its own for tabs yet. The login is open in a tab: "
+                           "approve it there and this tab moves to the account by itself."}, ok=False)
     if os.path.exists(flag("error")):
         with open(flag("error"), encoding="utf-8") as f:
             refuse("erro", f.read().strip() or "simulated error")
