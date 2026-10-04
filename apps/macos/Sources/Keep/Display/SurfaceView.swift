@@ -26,7 +26,7 @@ final class TerminalSurfaceView: NSView {
     private var backgroundObserver: NSObjectProtocol?
     private var drawCount = 0
     private var traceTimer: Timer?
-    private let workspace: String
+    let workspace: String
     let tab: UInt32
 
     /// Set once the runtime sends this surface a render request. From then on
@@ -122,6 +122,7 @@ final class TerminalSurfaceView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         observeOcclusion()
+        if isShowing { releaseTextSize() }
         guard window != nil, surface == nil else { return }
         createSurface()
     }
@@ -224,8 +225,59 @@ final class TerminalSurfaceView: NSView {
     /// hidden — the state the tab switch flips.
     private func noteShowing() {
         guard let watchFile else { return }
-        let showing = window != nil && !isHiddenOrHasHiddenAncestor
-        try? (showing ? "1" : "0").write(to: watchFile, atomically: true, encoding: .utf8)
+        try? (isShowing ? "1" : "0").write(to: watchFile, atomically: true, encoding: .utf8)
+    }
+
+    /// On screen, the way the client counts it: mounted and not hidden.
+    var isShowing: Bool {
+        window != nil && !isHiddenOrHasHiddenAncestor
+    }
+
+    // MARK: - the zoom, off screen
+
+    /// Whether this surface keeps the size of text it had, off screen,
+    /// rather than following the config like any other.
+    ///
+    /// A step of the zoom reaches every surface at once, and a new size of
+    /// text is a new grid. A hidden surface's client tells the daemon nothing
+    /// (`noteShowing`), so its tab's program goes on drawing for the grid it
+    /// had, into one the zoom has changed — and an inline program, which
+    /// redraws the bottom of the screen in place by counting the lines it
+    /// drew last time, erases too few of them: its frames pile up, and the
+    /// tab you come back to is garbage. It stays garbage, since the program
+    /// mends only what it thinks it drew. So a surface off screen keeps the
+    /// text its program is drawing for, as it keeps its old pixel size
+    /// (`pendingSize`), and takes the zoom when it is shown — which is when
+    /// its client tells the daemon, so that its grid and its program's
+    /// change together.
+    ///
+    /// libghostty's own rule does the keeping: a surface whose size was set
+    /// by hand is one a config reload leaves alone, and a reset gives it the
+    /// config's size.
+    private var holdingTextSize = false
+
+    /// Keep this surface's text at `points` through the reload about to
+    /// change it, if it is off screen. Once: a surface already held stays at
+    /// the size its program has, however many steps go by.
+    func holdTextSize(at points: Double) {
+        guard surface != nil, !holdingTextSize, !isShowing else { return }
+        holdingTextSize = true
+        textSizeAction("set_font_size:\(points)")
+    }
+
+    /// The config's size again: the zoom's, wherever it has got to.
+    private func releaseTextSize() {
+        guard holdingTextSize else { return }
+        holdingTextSize = false
+        textSizeAction("reset_font_size")
+    }
+
+    private func textSizeAction(_ action: String) {
+        guard let surface else { return }
+        let done = action.withCString {
+            ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count))
+        }
+        Trace.log("zoom", "\(workspace)/\(tab) \(action) done=\(done)")
     }
 
     // MARK: - drawing
@@ -318,6 +370,7 @@ final class TerminalSurfaceView: NSView {
     /// a fresh frame at final geometry before the reveal commits.
     func resumeDrawing() {
         guard let surface else { return }
+        releaseTextSize()
         flushPendingSize()
         ghostty_surface_set_occlusion(surface, true)
         if !renderDriven, let link = displayLink, !CVDisplayLinkIsRunning(link) {
@@ -347,6 +400,7 @@ final class TerminalSurfaceView: NSView {
     override func viewDidUnhide() {
         super.viewDidUnhide()
         noteShowing()
+        if isShowing { releaseTextSize() }
         flushPendingSize()
         if let surface {
             ghostty_surface_set_occlusion(surface, true)
@@ -808,6 +862,10 @@ final class TerminalSurfaceView: NSView {
     /// as alt-b.
     override func keyDown(with event: NSEvent) {
         guard surface != nil else { return }
+        if Self.isZoomChord(event) {
+            Trace.log("key", "zoom chord kept from the terminal")
+            return
+        }
         if Self.isChord(event), !(markedText.length > 0 && inputMethodActive && Self.isControlChord(event)) {
             let pending = markedText.length > 0
             commitComposition()
@@ -895,7 +953,32 @@ final class TerminalSurfaceView: NSView {
     }
 
     override func keyUp(with event: NSEvent) {
+        // Its release goes with it: a program told of a key let go that it
+        // was never told was pressed has a stray key on its hands.
+        if Self.isZoomChord(event) { return }
         send(event, action: GHOSTTY_ACTION_RELEASE)
+    }
+
+    /// ⌘=, ⌘+, ⌘- and ⌘0: the zoom's, and the zoom is the app's — View ▸
+    /// Zoom In, Zoom Out and Actual Size, for every tab at once.
+    ///
+    /// The menu takes them first, but not with its item greyed (at 300%, at
+    /// 50%, at 100% for ⌘0): AppKit then hands the chord on, and it comes
+    /// here. libghostty binds all four to the size of this pane alone, and a
+    /// pane sized by hand is one it stops resizing from the config — it sat
+    /// at its own size through every zoom after (measured). So none of them
+    /// reaches it, whatever binds them: a person's own config included.
+    ///
+    /// Told apart by the character, not by the key, so the four are the
+    /// four on any layout and on the keypad, and a key that is `=` here and
+    /// `ß` elsewhere is only kept back where it is `=`. Asked again from the
+    /// key code, as ⌘V is above: after a dead key the event's own characters
+    /// still carry it ("'="), and ⌘= would slip through as something else.
+    private static func isZoomChord(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.command, .control, .option]) == .command,
+              let key = event.characters(byApplyingModifiers: event.modifierFlags.intersection(.shift))
+        else { return false }
+        return ["=", "+", "-", "0"].contains(key)
     }
 
     /// A press that holds control, option or command.

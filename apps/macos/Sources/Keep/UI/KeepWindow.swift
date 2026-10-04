@@ -261,6 +261,10 @@ final class KeepWindow: NSWindow, NSToolbarDelegate {
         let side: CGFloat = 26
         button.frame = NSRect(x: 0, y: 0, width: side, height: side)
 
+        // The zoom stands beside it, in the same accessory: the toggle rides
+        // the sidebar's edge, and the zoom rides the toggle.
+        let zoom = ZoomControl()
+
         // The same ground the row's buttons stand on, so the controls
         // in the chrome are made of one thing.
         let accessory = NSTitlebarAccessoryViewController()
@@ -285,7 +289,8 @@ final class KeepWindow: NSWindow, NSToolbarDelegate {
             // lights, which is what the buttons at the far end of the
             // row does. Two controls in one chrome that behave differently
             // read as two kinds of thing, and only one of them as a control.
-            let host = CenteringHost(child: glass, control: button, size: side, leading: 4)
+            let host = CenteringHost(
+                child: glass, control: button, size: side, leading: 4, zoom: zoom)
             sidebarToggleHost = host
             accessory.view = host
         } else {
@@ -295,7 +300,11 @@ final class KeepWindow: NSWindow, NSToolbarDelegate {
             button.bezelStyle = .circular
             button.isBordered = true
             button.setFrameSize(NSSize(width: 28, height: 28))
-            accessory.view = button
+            // Hosted all the same, for the zoom to have somewhere to stand.
+            // Handed no control, the host leaves the button's colours alone.
+            let host = CenteringHost(child: button, size: 28, leading: 4, zoom: zoom)
+            sidebarToggleHost = host
+            accessory.view = host
         }
         addTitlebarAccessoryViewController(accessory)
     }
@@ -333,6 +342,10 @@ final class KeepWindow: NSWindow, NSToolbarDelegate {
 /// The titlebar sizes an accessory view to the whole of its height, and a
 /// control that is a shape — a circle of glass, say — has to stay that shape
 /// rather than being stretched into a slab.
+///
+/// And the zoom beside it, on its left, while the sidebar is open: the two
+/// ride the sidebar's edge together, so they can never be laid over one
+/// another.
 private final class CenteringHost: NSView {
     private let child: NSView
     /// The control inside the child, whose glyph brightens under the pointer.
@@ -340,6 +353,10 @@ private final class CenteringHost: NSView {
     private let side: CGFloat
     private let leading: CGFloat
     private var hovered = false
+    /// Its own pointer and its own colours; placed from here.
+    private let zoom: ZoomControl?
+    /// Between the zoom and the toggle: the gap the row's circles keep.
+    private static let zoomGap: CGFloat = 6
 
     /// How far the button can be asked to travel.
     ///
@@ -358,13 +375,22 @@ private final class CenteringHost: NSView {
     /// nothing to ride, so the button stays home.
     private var sidebarEdge: CGFloat = 0
 
-    init(child: NSView, control: NSButton? = nil, size: CGFloat, leading: CGFloat) {
+    init(
+        child: NSView, control: NSButton? = nil, size: CGFloat, leading: CGFloat,
+        zoom: ZoomControl? = nil
+    ) {
         self.child = child
         self.control = control
         self.side = size
         self.leading = leading
+        self.zoom = zoom
         super.init(frame: NSRect(x: 0, y: 0, width: Self.reach, height: size))
         addSubview(child)
+        if let zoom {
+            // Out of sight until there is a sidebar for it to stand over.
+            zoom.isHidden = true
+            addSubview(zoom)
+        }
         retint()
     }
 
@@ -383,14 +409,17 @@ private final class CenteringHost: NSView {
         NSSize(width: Self.reach, height: NSView.noIntrinsicMetric)
     }
 
-    /// Everything but the button belongs to whatever is underneath.
+    /// Everything but the button, and the zoom where it is showing, belongs
+    /// to whatever is underneath.
     ///
     /// This view is as long as the sidebar can be wide, and for most of that
     /// length it is empty titlebar lying over the tab row. A press there is
     /// the row's — a tab to be chosen or carried — and it would never reach
     /// it if this view answered for the whole of itself.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard childFrame.contains(convert(point, from: superview)) else { return nil }
+        let local = convert(point, from: superview)
+        let onZoom = zoom.map { !$0.isHidden && $0.frame.contains(local) } ?? false
+        guard onZoom || childFrame.contains(local) else { return nil }
         return super.hitTest(point)
     }
 
@@ -415,6 +444,37 @@ private final class CenteringHost: NSView {
         return max(leading, sidebarEdge - Self.dividerGap - side - originInWindow)
     }
 
+    /// Where the zoom goes, and whether with its percentage: all of it where
+    /// the sidebar has the room, the two buttons alone where it has room for
+    /// those, and none of it while the sidebar is shut — it is the sidebar's,
+    /// and a shut sidebar leaves this row to the tabs. Never nearer the
+    /// traffic lights than the toggle's own home.
+    private var zoomPlace: (frame: NSRect, compact: Bool)? {
+        guard window != nil, sidebarEdge > 0 else { return nil }
+        let end = childX - Self.zoomGap
+        for compact in [false, true] {
+            let width = ZoomControl.width(compact: compact)
+            guard end - width >= leading else { continue }
+            let frame = NSRect(
+                x: end - width,
+                y: ((bounds.height - ZoomControl.height) / 2).rounded(),
+                width: width,
+                height: ZoomControl.height)
+            return (frame, compact)
+        }
+        return nil
+    }
+
+    private func placeZoom() {
+        guard let zoom else { return }
+        let place = zoomPlace
+        if let place {
+            zoom.compact = place.compact
+            if zoom.frame != place.frame { zoom.frame = place.frame }
+        }
+        if zoom.isHidden != (place == nil) { zoom.isHidden = place == nil }
+    }
+
     /// Untinted glass at rest, which refracts darker than the bar and reads
     /// as a well rather than a lamp; tinted only under the pointer. The same
     /// two states, from the same palette, as the row's buttons.
@@ -429,6 +489,7 @@ private final class CenteringHost: NSView {
             Glass.tint(child, hovered ? palette.glassTint : nil)
         }
         control?.contentTintColor = hovered ? palette.text : palette.dimText
+        zoom?.retint()
     }
 
     /// The circle, not the whole accessory. The titlebar stretches this view
@@ -469,6 +530,7 @@ private final class CenteringHost: NSView {
 
     override func layout() {
         super.layout()
+        placeZoom()
         let place = childFrame
         guard child.frame != place else { return }
         child.frame = place

@@ -610,10 +610,12 @@ enum Command: Hashable, CaseIterable {
         // ⌘N belongs to the workspace, not the window: a workspace outlives
         // every window that ever showed it.
         case .newWorkspace: return ["⌘", "N"]
-        // The two font commands advertise nothing. Ghostty binds its own
-        // ⌘+ and ⌘− to a size it holds itself, which this would then argue
-        // with on the next reload — so these are reachable from here and
-        // nowhere else, and the row says so by saying nothing.
+        // Bigger and Smaller text are the zoom's steps, the same as ⌘+ and
+        // ⌘− (View ▸ Zoom In and Zoom Out, and the buttons above the
+        // sidebar). Resetting the text size advertises nothing: it puts the
+        // face back as well, which ⌘0 does not.
+        case .fontBigger: return ["⌘", "+"]
+        case .fontSmaller: return ["⌘", "−"]
         default: return []
         }
     }

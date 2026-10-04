@@ -35,6 +35,8 @@
 		E356BA1857859AE5D2018AFA /* Glass.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ADE1AE5D8DAF64D7C40B063 /* Glass.swift */; };
 		EB832312EF01355D4678683C /* GhosttyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 135A8576CC41EE22386C8C4D /* GhosttyApp.swift */; };
 		F320A7F6CECB057B2CB6333F /* Snapshots.swift in Sources */ = {isa = PBXBuildFile; fileRef = 409F4278222CDF7A60BB0BC8 /* Snapshots.swift */; };
+		D4F0FFEE0000000000000001 /* TerminalZoom.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F0FFEE0000000000000002 /* TerminalZoom.swift */; };
+		D4F0FFEE0000000000000003 /* ZoomControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F0FFEE0000000000000004 /* ZoomControl.swift */; };
 		A1C0FFEE0000000000000001 /* AIUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0FFEE0000000000000002 /* AIUsage.swift */; };
 		C3E0FFEE0000000000000001 /* AIChoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E0FFEE0000000000000002 /* AIChoice.swift */; };
 		C3E0FFEE0000000000000003 /* ExternalHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E0FFEE0000000000000004 /* ExternalHelper.swift */; };
@@ -60,6 +62,8 @@
 		3ADD16A5C6AADA495B3C279A /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		3ADE1AE5D8DAF64D7C40B063 /* Glass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Glass.swift; sourceTree = "<group>"; };
 		409F4278222CDF7A60BB0BC8 /* Snapshots.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Snapshots.swift; sourceTree = "<group>"; };
+		D4F0FFEE0000000000000002 /* TerminalZoom.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalZoom.swift; sourceTree = "<group>"; };
+		D4F0FFEE0000000000000004 /* ZoomControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomControl.swift; sourceTree = "<group>"; };
 		A1C0FFEE0000000000000002 /* AIUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIUsage.swift; sourceTree = "<group>"; };
 		C3E0FFEE0000000000000002 /* AIChoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIChoice.swift; sourceTree = "<group>"; };
 		C3E0FFEE0000000000000004 /* ExternalHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalHelper.swift; sourceTree = "<group>"; };
@@ -115,6 +119,7 @@
 				3519A6ACCC0D876A65383EF4 /* TabStripView.swift */,
 				0B045B3D1F2B2D78B7D298AB /* TerminalText.swift */,
 				05581E4C489CBFCB9EE0FC63 /* WorkspaceSidebar.swift */,
+				D4F0FFEE0000000000000004 /* ZoomControl.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -137,6 +142,7 @@
 				C3E0FFEE0000000000000002 /* AIChoice.swift */,
 				5461D3D1159F36613F895FA2 /* TabEntity.swift */,
 				1621ED87636A9ED661051FFE /* TerminalPrefs.swift */,
+				D4F0FFEE0000000000000002 /* TerminalZoom.swift */,
 				455B3F87550E85E26FFD249F /* WorkspaceEntity.swift */,
 			);
 			path = Model;
@@ -284,10 +290,12 @@
 				43B96FF24E38E0F3B1F6D06A /* TabEntity.swift in Sources */,
 				B59464F3438BD1075E780F68 /* TabStripView.swift in Sources */,
 				01CE98F4FCB7026CF60E0744 /* TerminalPrefs.swift in Sources */,
+				D4F0FFEE0000000000000001 /* TerminalZoom.swift in Sources */,
 				1DB5C2ADB8A13CF62A60771D /* TerminalText.swift in Sources */,
 				6F431B737F8BD1938D1B0FF2 /* Trace.swift in Sources */,
 				4A2967F994700E628ED8287E /* WorkspaceEntity.swift in Sources */,
 				37E566353DB718B0FE901831 /* WorkspaceSidebar.swift in Sources */,
+				D4F0FFEE0000000000000003 /* ZoomControl.swift in Sources */,
 				395692A2EBB054F85205F0CB /* Zoxide.swift in Sources */,
 				B2D0FFEE0000000000000001 /* Worktrees.swift in Sources */,
 				1A4DF695AB0229E7D445A48A /* main.swift in Sources */,

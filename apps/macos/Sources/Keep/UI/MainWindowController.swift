@@ -523,10 +523,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .killWorkspace:
             guard let name = applied?.active?.id.workspace else { return }
             send(.killWorkspace(name))
+        // The zoom's steps and ends, the same as the buttons and ⌘+. These
+        // used to go a point at a time, clamped to 8...32, which once the
+        // zoom had gone past 32 made "Bigger text" smaller.
         case .fontBigger:
-            wear { $0.fontSize = min(Self.step(GhosttyApp.shared.terminalFontSize, by: 1), 32) }
+            GhosttyApp.shared.zoom(by: 1)
         case .fontSmaller:
-            wear { $0.fontSize = max(Self.step(GhosttyApp.shared.terminalFontSize, by: -1), 8) }
+            GhosttyApp.shared.zoom(by: -1)
         case .fontReset:
             wear { $0.fontSize = nil; $0.fontFamily = nil }
         case .clearTheme:
@@ -534,10 +537,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .chooseTheme, .chooseFont:
             break
         }
-    }
-
-    private static func step(_ size: Double, by amount: Double) -> Double {
-        (size + amount).rounded()
     }
 
     /// What the picker's actions panel asked for, on the row it was over.
