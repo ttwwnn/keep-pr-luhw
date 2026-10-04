@@ -29,6 +29,9 @@ struct WorkspaceSidebar: View {
     let dispatch: (Intent) -> Void
     @State private var newName = ""
     @State private var hovered: String?
+    /// The zoom's share, which the names here are written at (see
+    /// `TerminalZoom`). Held as state so that a step redraws the rows.
+    @State private var titleZoom = GhosttyApp.shared.zoomLevel
     /// A header's +, which brightens under the pointer. Apart from `hovered`,
     /// which the header itself sets while the pointer is anywhere on it.
     @State private var hoveredNewTab: String?
@@ -121,7 +124,7 @@ struct WorkspaceSidebar: View {
 
     /// The terminal's own face, for the strings the terminal would also print.
     private var identifier: Font {
-        Font(GhosttyApp.shared.terminalFont(size: 12.5))
+        Font(GhosttyApp.shared.terminalFont(size: 12.5 * titleZoom))
     }
 
     private var counter: Font {
@@ -155,6 +158,9 @@ struct WorkspaceSidebar: View {
         // has no signal at all on macOS; the next drag's onDrag clears what
         // it left.)
         .onDrop(of: [.plainText], delegate: CleanupDropDelegate(clear: cancelDrag))
+        .onReceive(NotificationCenter.default.publisher(for: GhosttyApp.textSizeDidChange)) { _ in
+            titleZoom = GhosttyApp.shared.zoomLevel
+        }
     }
 
     private var list: some View {
@@ -464,15 +470,16 @@ struct WorkspaceSidebar: View {
                 // when the tab is waiting on you: see `Attention`.
                 if wantsYou {
                     Image(systemName: Attention.symbol)
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 10 * titleZoom, weight: .semibold))
                         .foregroundStyle(Palette.attentionInk)
                 } else if tab.busy {
                     Text("✳")
-                        .font(.system(size: 10))
+                        .font(.system(size: 10 * titleZoom))
                         .foregroundStyle(Palette.busy)
                 }
                 Text(tab.title)
-                    .font(.system(size: 12, weight: wantsYou ? .semibold : chosen ? .medium : .regular))
+                    .font(.system(size: 12 * titleZoom, weight: wantsYou ? .semibold : chosen ? .medium : .regular))
+                    .accessibilityIdentifier("sidebar-title-\(tab.id)")
                     .foregroundStyle(titleInk(for: tab, chosen: chosen, hovered: hoveredHere))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -487,7 +494,7 @@ struct WorkspaceSidebar: View {
                 let program = AIChoices.programLabel(command: tab.command, account: tab.account)
                 if !program.isEmpty {
                     Text("— \(program)")
-                        .font(.system(size: 12))
+                        .font(.system(size: 12 * titleZoom))
                         .foregroundStyle(wantsYou ? Palette.attentionInk.opacity(0.62) : Palette.inkFaint)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
@@ -595,11 +602,11 @@ struct WorkspaceSidebar: View {
         return HStack(spacing: 6) {
             if tab.busy {
                 Text("✳")
-                    .font(.system(size: 10))
+                    .font(.system(size: 10 * titleZoom))
                     .foregroundStyle(Palette.busy)
             }
             nameField(for: .tab(tab.id), prompt: "The program's title")
-                .font(.system(size: 12, weight: chosen ? .medium : .regular))
+                .font(.system(size: 12 * titleZoom, weight: chosen ? .medium : .regular))
             // The close button's room, as on the row.
             Color.clear.frame(width: 12, height: 1)
         }

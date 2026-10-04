@@ -12,7 +12,8 @@
 # (terminal.json, in a state directory of the test's own) and the columns and
 # rows the daemon was given for the tab — a larger text is a smaller grid —
 # and a tab off screen keeps the grid its program draws for until it is
-# shown.
+# shown. The visible title frames in both tab lists must grow and shrink
+# too, and the row of tabs with them.
 #
 #   tools/zoom-app-test.sh            (SKIP_BUILD=1 to use the KeepDev built last;
 #                                      KEEP_TEST_APP=<path to an .app> to drive another build)
@@ -147,6 +148,31 @@ present() {
 # tree did not say, so that no comparison is made with an empty number.
 left_of() { local x y w h; read -r x y w h <<<"$(ask frame "$1")"; [ -n "$h" ] && echo "$x"; }
 right_of() { local x y w h; read -r x y w h <<<"$(ask frame "$1")"; [ -n "$h" ] && echo $((x + w)); }
+title_heights() {
+    local id="$TITLE_WORKSPACE/${1:-1}" x y w h
+    read -r x y w h <<<"$(ask frame "sidebar-title-$id")"
+    printf '%s ' "${h:-0}"
+    read -r x y w h <<<"$(ask frame "strip-title-$id")"
+    printf '%s\n' "${h:-0}"
+}
+titles_resized() {  # titles_resized <old heights> <-gt|-lt> [tab]
+    local old_side old_strip side strip
+    read -r old_side old_strip <<<"$1"
+    read -r side strip <<<"$(title_heights "${3:-1}")"
+    [ "$old_side" -gt 0 ] && [ "$old_strip" -gt 0 ] \
+        && [ "$side" -gt 0 ] && [ "$strip" -gt 0 ] \
+        && [ "$side" "$2" "$old_side" ] && [ "$strip" "$2" "$old_strip" ] \
+        && echo yes || echo no
+}
+title_fits_strip() {
+    local x y w h tx ty tw th
+    read -r x y w h <<<"$(ask frame "strip-tab-$TITLE_WORKSPACE/1")"
+    read -r tx ty tw th <<<"$(ask frame "strip-title-$TITLE_WORKSPACE/1")"
+    [ "${th:-0}" -gt 0 ] && [ "${tw:-0}" -gt 0 ] \
+        && [ "$ty" -ge "$y" ] && [ $((ty + th)) -le $((y + h)) ] \
+        && echo yes || echo no
+}
+row_height() { local x y w h; read -r x y w h <<<"$(ask frame "strip-tab-$TITLE_WORKSPACE/1")"; echo "${h:-0}"; }
 # The grid the surface of a tab off screen shows, read off the terminal its
 # client runs in: the one client whose `showing` file says 0. What the daemon
 # gave the tab is `grid`. The two part when a hidden tab's text takes a step
@@ -253,7 +279,12 @@ check "View: Zoom In and Zoom Out can be chosen, Actual Size is greyed" "1 1 0" 
     "$(item_is "Zoom In" 1) $(item_is "Zoom Out" 1) $(item_is "Actual Size" 0)"
 check "it ends before the toggle" yes "$(before keep.zoom.in "Toggle Sidebar")"
 BASE=$(grid 1)
+TITLE_WORKSPACE=$("$APP/Contents/Resources/keep" ls 2>/dev/null | awk 'NR == 1 { print $1 }')
+TITLES100=$(title_heights)
+ROW100=$(row_height)
 say "        (tab 1 at 100%: $BASE)"
+say "        (sidebar and strip title heights: $TITLES100)"
+check "the title fits its tab at 100%" yes "$(title_fits_strip)"
 
 say ""
 say "the buttons"
@@ -262,15 +293,22 @@ check "+ says 110%" "110%" "$(level)"
 check "+ writes 110% of 13 points" 14.3 "$(written)"
 AT110=$(grid 1)
 check "+ gives the tab fewer columns" yes "$([ "$(cols 1)" -lt "${BASE%x*}" ] && echo yes || echo no)"
+check "+ enlarges both tab titles" yes "$(titles_resized "$TITLES100" -gt)"
+TITLES110=$(title_heights)
 step keep.zoom.out 100%; grid_is 1 "$BASE"; step keep.zoom.out 90%; grid_leaves 1 "$BASE"
 check "- twice says 90%" "90%" "$(level)"
 check "- twice writes 11.7" 11.7 "$(written)"
 check "- gives it more columns than at 100%" yes "$([ "$(cols 1)" -gt "${BASE%x*}" ] && echo yes || echo no)"
+# SwiftUI reports the sidebar's title with its row's frame, and the row keeps
+# a floor below 100% (the close button's room, the marks beside the title):
+# so 90% is compared with 110%, in both lists.
+check "- reduces both tab titles from 110%" yes "$(titles_resized "$TITLES110" -lt)"
 AT90=$(grid 1)
 step keep.zoom.reset 100%; grid_leaves 1 "$AT90"
 check "the percentage goes back to 100%" "100%" "$(level)"
 check "and writes nothing down" none "$(written)"
 check "and the tab is as it was" "$BASE" "$(grid 1)"
+check "and both titles return to their original height" "$TITLES100" "$(title_heights)"
 
 say ""
 say "the chords, posted to the app alone"
@@ -296,6 +334,7 @@ menu_until File "New Tab" 2 tabs; sleep 1.5
 check "a second tab opens at 100%" "$BASE" "$(grid 2)"
 step keep.zoom.in 110%; grid_leaves 2 "$BASE"
 check "+ on the second tab" "$AT110" "$(grid 2)"
+check "both titles of the second tab enlarge" yes "$(titles_resized "$TITLES100" -gt 2)"
 check "the first, off screen, keeps the grid its program draws for" "$BASE $BASE" \
     "$(grid 1) $(hidden_grid)"
 menu_until Window "Show Tab 1" "$AT110" grid 1
@@ -313,6 +352,9 @@ check "each press of + is the next step" yes "$walked"
 grid_leaves 1 "$BASE"
 check "seven steps up is 300%" "300%" "$(level)"
 check "39 points written" 39 "$(written)"
+check "300% enlarges both titles beyond 110%" yes "$(titles_resized "$TITLES110" -gt)"
+check "the enlarged title fits its tab at 300%" yes "$(title_fits_strip)"
+check "and the row grows to hold it" yes "$([ "$(row_height)" -gt "$ROW100" ] && echo yes || echo no)"
 check "larger cannot be pressed" 0 "$(enabled keep.zoom.in)"
 check "View: Zoom In is greyed, Actual Size can be chosen" "0 1" \
     "$(item_is "Zoom In" 0) $(item_is "Actual Size" 1)"
@@ -342,6 +384,7 @@ done
 check "each press of - is the next step" yes "$walked"
 grid_leaves 1 "$AT300"
 check "twelve steps down is 50%" "50%" "$(level)"
+check "50% reduces both titles below 110%" yes "$(titles_resized "$TITLES110" -lt)"
 check "smaller cannot be pressed" 0 "$(enabled keep.zoom.out)"
 check "View: Zoom Out is greyed" 0 "$(item_is "Zoom Out" 0)"
 AT50=$(grid_settles 1)
@@ -386,6 +429,7 @@ quit_app
 launch
 grid_is 1 "$AT110"
 check "it says 110%" "110%" "$(level)"
+check "both titles keep their zoom after relaunch" "$TITLES110" "$(title_heights)"
 check "and the tab has 110%'s grid" "$AT110" "$(grid 1)"
 
 say ""

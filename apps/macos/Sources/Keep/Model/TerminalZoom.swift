@@ -10,10 +10,13 @@ import Foundation
 /// nothing at all. Any other step is a `font-size` in Keep's own config, the
 /// line the palette's "Bigger text" has always written.
 ///
-/// Only the text in the terminals. The sidebar and the tab row stay the size
-/// they are, as a browser's own toolbar does when its page is zoomed: they
-/// are the frame the work is shown in, and a frame that grew with the work
-/// would take the room the zoom was for.
+/// The terminals' text, and the tabs' titles with it — in the sidebar and in
+/// the row above the terminal — by the same share. A title is text that is
+/// read too, and one left at its own size beside a terminal three times as
+/// large, or half, was the one thing in the window the zoom had not reached.
+/// The frame stays as it is, as a browser's toolbar does: the buttons, the
+/// zoom itself, the space around the rows. A row grows only by what a larger
+/// title needs.
 ///
 /// Arithmetic and nothing else, Foundation only, so a test can be built out
 /// of this file alone (tools/zoom-test.sh).

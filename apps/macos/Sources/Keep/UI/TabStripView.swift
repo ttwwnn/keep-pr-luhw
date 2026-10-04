@@ -88,6 +88,7 @@ final class TabStripView: NSView {
     private var chromeButtons: [ChromeButton] = []
     private let chromeIsGlass = Glass.isAvailable
     private var backgroundObserver: NSObjectProtocol?
+    private var sizeObserver: NSObjectProtocol?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -121,6 +122,16 @@ final class TabStripView: NSView {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.retint() }
         }
+        // A step of the zoom sizes the titles too: written again at the new
+        // size, and laid out again for it.
+        sizeObserver = NotificationCenter.default.addObserver(
+            forName: GhosttyApp.textSizeDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.applyCells()
+                self?.needsLayout = true
+            }
+        }
     }
 
     @available(*, unavailable)
@@ -130,6 +141,7 @@ final class TabStripView: NSView {
         if let backgroundObserver {
             NotificationCenter.default.removeObserver(backgroundObserver)
         }
+        if let sizeObserver { NotificationCenter.default.removeObserver(sizeObserver) }
         if let renameWatch { NSEvent.removeMonitor(renameWatch) }
         if let fieldWatch { NSEvent.removeMonitor(fieldWatch) }
     }
@@ -973,11 +985,21 @@ final class TabCellView: NSView {
     /// following its program, and nobody would know why.
     private var seed = ""
 
+    /// The size a tab's title is written at: twelve points at 100%, and the
+    /// zoom's share of that at any other step, as in the sidebar.
+    static var titleFontSize: CGFloat { 12 * GhosttyApp.shared.zoomLevel }
+
     /// How tall a tab's capsule is: what the titlebar row left it at thirteen
     /// points off each edge, and the same across as the chrome buttons. Kept
     /// in a shorter row too — full screen's, which has no traffic lights to
     /// line up with — by taking less off the edges, never off the capsule.
-    private let capsuleHeight: CGFloat = 26
+    /// A title the zoom has made too tall for that takes a taller capsule,
+    /// four points clear of it above and below, and the row grows to hold it
+    /// (`MainWindowController.fullScreenRowHeight`).
+    static var capsuleHeight: CGFloat {
+        let font = NSFont.systemFont(ofSize: titleFontSize, weight: .semibold)
+        return max(26, ceil(font.ascender - font.descender + font.leading) + 8)
+    }
     /// Half the gap between two capsules: each tab insets its own fill, so
     /// neighbours end up twice this far apart.
     private let horizontalInset: CGFloat = 2
@@ -1098,7 +1120,7 @@ final class TabCellView: NSView {
 
     override func layout() {
         super.layout()
-        let verticalInset = max(2, ((bounds.height - capsuleHeight) / 2).rounded(.down))
+        let verticalInset = max(2, ((bounds.height - Self.capsuleHeight) / 2).rounded(.down))
         fill.frame = bounds.insetBy(dx: horizontalInset, dy: verticalInset)
         // A capsule: the radius is half the height, which is the shape a tab
         // lozenge has.
@@ -1197,8 +1219,14 @@ final class TabCellView: NSView {
             title = "✳ \(title)"
         }
         let font = NSFont.systemFont(
-            ofSize: 12, weight: item.isActive ? .semibold : .regular)
+            ofSize: Self.titleFontSize, weight: item.isActive ? .semibold : .regular)
         label.font = font
+        label.setAccessibilityIdentifier("strip-title-\(item.id)")
+        let editFont = NSFont.systemFont(ofSize: Self.titleFontSize, weight: .medium)
+        if editor.font != editFont {
+            editor.font = editFont
+            editor.currentEditor()?.font = editFont
+        }
 
         // The tab you are in already answers, and a lone tab is a window
         // title with nothing to choose between — neither is an offer, so

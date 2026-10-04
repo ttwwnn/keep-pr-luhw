@@ -29,6 +29,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     private var fullScreenUnderStrip: NSLayoutConstraint!
     private var fullScreenUnderNothing: NSLayoutConstraint!
     private var inFullScreen = false
+    private var sizeObserver: NSObjectProtocol?
     private let container = TabContentContainer()
     private let sidebarHost: SidebarHost
     private let picker = PickerView()
@@ -166,6 +167,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         super.init(window: window)
         window.delegate = self
+        // The row is as tall as the titles in it need: see `updateZoomHeight`.
+        updateZoomHeight()
+        sizeObserver = NotificationCenter.default.addObserver(
+            forName: GhosttyApp.textSizeDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateZoomHeight() }
+        }
 
         window.onToggleSidebar = { [weak self] in
             guard let self, let state = self.currentSidebarGeometry() else { return }
@@ -270,6 +278,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
 
+    deinit {
+        if let sizeObserver { NotificationCenter.default.removeObserver(sizeObserver) }
+    }
+
     // MARK: - SessionRendering
 
     func render(_ snapshot: SessionSnapshot) {
@@ -293,8 +305,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             tabStrip.isHidden = snapshot.sidebar.verticalTabs
             if snapshot.sidebar.verticalTabs { window?.isMovable = true }
             // In full screen the row is the strip's own: without it the
-            // terminal takes the top.
-            if inFullScreen { layOutChrome() }
+            // terminal takes the top. In a window, a row the zoom made taller
+            // than the titlebar goes and comes back with the strip.
+            layOutChrome()
         }
 
         guard let active = snapshot.active else {
@@ -713,9 +726,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// In full screen the row only has to hold the tabs: no traffic lights to
     /// clear, no titlebar to match. A tab's capsule and the chrome buttons
-    /// are 26 points, and four either side is the row — the rest of the
-    /// screen goes to the terminal.
-    static let fullScreenRowHeight: CGFloat = 34
+    /// start at 26 points; enlarged titles grow the capsule, with four
+    /// points either side — the rest of the screen goes to the terminal.
+    static var fullScreenRowHeight: CGFloat { TabCellView.capsuleHeight + 8 }
+
+    /// Fit the row to the titles at the zoom's size. In full screen the row
+    /// is the capsule and four points either side. In a window it is the
+    /// titlebar's, 52 points, until a title the zoom has enlarged needs a
+    /// capsule the titlebar cannot hold with four points to spare: then the
+    /// row reaches below the titlebar by the difference, and the terminal
+    /// starts that much lower.
+    private func updateZoomHeight() {
+        fullScreenStripHeight.constant = Self.fullScreenRowHeight
+        let titlebar = window.map { $0.frame.height - $0.contentLayoutRect.height } ?? 52
+        let extra = tabStrip.isHidden ? 0 : max(0, Self.fullScreenRowHeight - max(52, titlebar))
+        // A constraint's constant runs down the screen, as everywhere else in
+        // this app: the strip reaches below the native titlebar and the
+        // terminal's top moves down by the same amount.
+        for constraint in windowedChrome { constraint.constant = extra }
+    }
 
     func windowWillEnterFullScreen(_ notification: Notification) {
         fullScreenStripHeight.constant = Self.fullScreenRowHeight
@@ -739,6 +768,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func layOutChrome() {
+        updateZoomHeight()
         NSLayoutConstraint.deactivate(windowedChrome + [
             fullScreenStripHeight, fullScreenBackdrop, fullScreenUnderStrip, fullScreenUnderNothing,
         ])
